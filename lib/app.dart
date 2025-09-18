@@ -1,0 +1,39 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'l10n/app_localizations.dart';
+import 'core/vocab/vocab_repo.dart';
+import 'core/ui/shell_scaffold.dart';
+
+class BhoomiMaApp extends StatelessWidget {
+  const BhoomiMaApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      onGenerateTitle: (ctx) => AppLocalizations.of(ctx)!.appName,
+      localizationsDelegates: const [
+        AppLocalizations.delegate,
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: AppLocalizations.supportedLocales,
+      // If the device locale is Malayalam (ml) we show ml; otherwise English.
+      // You can expose a Settings toggle later.
+      localeResolutionCallback: (locale, supported) {
+        if (locale == null) return const Locale('en');
+        for (final l in supported) {
+          if (l.languageCode == locale.languageCode) return l;
+        }
+        // Default to Malayalam build if available, else English
+        return const Locale('ml');
+      },
+      theme: ThemeData(
+        colorSchemeSeed: Colors.green,
+        useMaterial3: true,
+      ),
+      home: const VocabBoot(child: ShellScaffold()),
+    );
+  }
+}

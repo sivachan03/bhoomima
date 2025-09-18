@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "locales": ["en", "kn", "ta", "hi"],
+  "terms": [
+    {"domain":"FARMLOG.TYPE","code":"EXPENSE","labels":{"en":"Expense","kn":"ಖರ್ಚು","ta":"செலவு","hi":"खर्च"}},
+    {"domain":"FARMLOG.TYPE","code":"INCOME","labels":{"en":"Income","kn":"ಆದಾಯ","ta":"வருமானம்","hi":"आय"}},
+    {"domain":"FARMLOG.TYPE","code":"INPUT","labels":{"en":"Input","kn":"ಇನ್‌ಪುಟ್","ta":"உள்ளீடு","hi":"इनपुट"}},
+    {"domain":"FARMLOG.TYPE","code":"OUTPUT","labels":{"en":"Output","kn":"ಔಟ್ಪುಟ್","ta":"வெளியீடு","hi":"आउटपुट"}},
+    {"domain":"FARMLOG.TYPE","code":"OPERATION","labels":{"en":"Operation","kn":"ಕಾರ್ಯ","ta":"செயல்","hi":"कार्य"}},
+    {"domain":"FARMLOG.TYPE","code":"OBSERVATION","labels":{"en":"Observation","kn":"ನಿರೀಕ್ಷೆ","ta":"கவனிப்பு","hi":"अवलोकन"}},
+
+    {"domain":"FARMLOG.SUBTYPE.EXPENSE","code":"LABOUR","labels":{"en":"Labour","kn":"ಕಾರ್ಮಿಕ","ta":"தொழிலாளர்","hi":"मजदूरी"}},
+    {"domain":"FARMLOG.SUBTYPE.EXPENSE","code":"FERTILIZER","labels":{"en":"Fertilizer","kn":"ರಸಗೊಬ್ಬರ","ta":"உரம்","hi":"उर्वरक"}},
+    {"domain":"FARMLOG.SUBTYPE.EXPENSE","code":"MANURE","labels":{"en":"Manure","kn":"ಗೊಬ್ಬರ","ta":"சாணம்","hi":"खाद"}},
+    {"domain":"FARMLOG.SUBTYPE.EXPENSE","code":"SEEDS","labels":{"en":"Seeds","kn":"ಬೀಜ","ta":"விதைகள்","hi":"बीज"}},
+    {"domain":"FARMLOG.SUBTYPE.EXPENSE","code":"FUEL","labels":{"en":"Fuel","kn":"ಇಂಧನ","ta":"எரிபொருள்","hi":"ईंधन"}},
+    {"domain":"FARMLOG.SUBTYPE.EXPENSE","code":"HIRE","labels":{"en":"Hire","kn":"ಕಿರಾಯಿಗೆ","ta":"வாடகை","hi":"किराया"}},
+    {"domain":"FARMLOG.SUBTYPE.EXPENSE","code":"OTHER","labels":{"en":"Other","kn":"ಇತರೆ","ta":"மற்றவை","hi":"अन्य"}},
+
+    {"domain":"FARMLOG.SUBTYPE.INPUT","code":"FERTILIZER","labels":{"en":"Fertilizer","kn":"ರಸಗೊಬ್ಬರ","ta":"உரம்","hi":"उर्वरक"}},
+    {"domain":"FARMLOG.SUBTYPE.INPUT","code":"PESTICIDE","labels":{"en":"Pesticide","kn":"ಕೀಟನಾಶಕ","ta":"பூச்சிக்கொல்லி","hi":"कीटनाशक"}},
+    {"domain":"FARMLOG.SUBTYPE.INPUT","code":"SEED","labels":{"en":"Seed","kn":"ಬೀಜ","ta":"விதை","hi":"बीज"}},
+    {"domain":"FARMLOG.SUBTYPE.INPUT","code":"FYM","labels":{"en":"FYM","kn":"ಎಫ್‌ವೈಎಂ","ta":"எஃப்‌வைஎம்","hi":"एफवायएम"}},
+    {"domain":"FARMLOG.SUBTYPE.INPUT","code":"LIME","labels":{"en":"Lime","kn":"ಚೂನಾ","ta":"சுண்ணாம்பு","hi":"चूना"}},
+    {"domain":"FARMLOG.SUBTYPE.INPUT","code":"OTHER","labels":{"en":"Other","kn":"ಇತರೆ","ta":"மற்றவை","hi":"अन्य"}},
+
+    {"domain":"FARMLOG.SUBTYPE.OUTPUT","code":"HARVEST","labels":{"en":"Harvest","kn":"ಪೇರಿಕೆ","ta":"அறுவடை","hi":"कटाई"}},
+    {"domain":"FARMLOG.SUBTYPE.OUTPUT","code":"SALE","labels":{"en":"Sale","kn":"ಮಾರಾಟ","ta":"விற்பனை","hi":"बिक्री"}},
+
+    {"domain":"FARMLOG.SUBTYPE.OPERATION","code":"IRRIGATION","labels":{"en":"Irrigation","kn":"ನೀರಾವರಿ","ta":"நீர்ப்பாசனம்","hi":"सिंचाई"}},
+    {"domain":"FARMLOG.SUBTYPE.OPERATION","code":"SPRAYING","labels":{"en":"Spraying","kn":"ಸಿಂಪಡಣೆ","ta":"தூவுதல்","hi":"छिड़काव"}},
+    {"domain":"FARMLOG.SUBTYPE.OPERATION","code":"WEEDING","labels":{"en":"Weeding","kn":"ಸೋಳೆ ತೆಗೆಯುವುದು","ta":"களையை அகற்றுதல்","hi":"निराई"}},
+    {"domain":"FARMLOG.SUBTYPE.OPERATION","code":"PRUNING","labels":{"en":"Pruning","kn":"ಕತ್ತರಿಕೆ","ta":"வெருகல்","hi":"कटाई-छंटाई"}},
+    {"domain":"FARMLOG.SUBTYPE.OPERATION","code":"TILLING","labels":{"en":"Tilling","kn":"ನಗ್ಗುವಿಕೆ","ta":"உழவு","hi":"जुताई"}},
+    {"domain":"FARMLOG.SUBTYPE.OPERATION","code":"TRANSPORT","labels":{"en":"Transport","kn":"ಸಾರಿಗೆ","ta":"கடத்தல்","hi":"परिवहन"}},
+    {"domain":"FARMLOG.SUBTYPE.OPERATION","code":"OTHER","labels":{"en":"Other","kn":"ಇತರೆ","ta":"மற்றவை","hi":"अन्य"}},
+
+    {"domain":"FARMLOG.SUBTYPE.OBSERVATION","code":"PEST","labels":{"en":"Pest","kn":"ಕೀಟ","ta":"பூச்சி","hi":"कीट"}},
+    {"domain":"FARMLOG.SUBTYPE.OBSERVATION","code":"DISEASE","labels":{"en":"Disease","kn":"ರೋಗ","ta":"நோய்","hi":"रोग"}},
+    {"domain":"FARMLOG.SUBTYPE.OBSERVATION","code":"WEATHER","labels":{"en":"Weather","kn":"ಹವಾಮಾನ","ta":"வானிலை","hi":"मौसम"}},
+    {"domain":"FARMLOG.SUBTYPE.OBSERVATION","code":"SOIL","labels":{"en":"Soil","kn":"ಮಣ್ಣು","ta":"மண்","hi":"मिट्टी"}},
+    {"domain":"FARMLOG.SUBTYPE.OBSERVATION","code":"PHOTO","labels":{"en":"Photo","kn":"ಫೋಟೋ","ta":"புகைப்படம்","hi":"फोटो"}},
+    {"domain":"FARMLOG.SUBTYPE.OBSERVATION","code":"OTHER","labels":{"en":"Other","kn":"ಇತರೆ","ta":"மற்றவை","hi":"अन्य"}},
+
+    {"domain":"DIARY.TYPE","code":"FERTILIZER","labels":{"en":"Fertilizer","kn":"ರಸಗೊಬ್ಬರ","ta":"உரம்","hi":"उर्वरक"}},
+    {"domain":"DIARY.TYPE","code":"IRRIGATION","labels":{"en":"Irrigation","kn":"ನೀರಾವರಿ","ta":"நீர்ப்பாசனம்","hi":"सिंचाई"}},
+    {"domain":"DIARY.TYPE","code":"PESTCONTROL","labels":{"en":"Pest Control","kn":"ಕೀಟ ನಿಯಂತ್ರಣ","ta":"பூச்சி கட்டுப்பாடு","hi":"कीट नियंत्रण"}},
+    {"domain":"DIARY.TYPE","code":"SOILTEST","labels":{"en":"Soil Test","kn":"ಮಣ್ಣು ಪರೀಕ್ಷೆ","ta":"மண் பரிசோதனை","hi":"मृदा परीक्षण"}},
+    {"domain":"DIARY.TYPE","code":"HARVESTPREP","labels":{"en":"Harvest Prep","kn":"ಪೇರಿಕೆ ಸಿದ್ಧತೆ","ta":"அறுவடை தயாரிப்பு","hi":"कटाई तैयारी"}},
+    {"domain":"DIARY.TYPE","code":"MAINTENANCE","labels":{"en":"Maintenance","kn":"ನಿರ್ವಹಣೆ","ta":"பராமரிப்பு","hi":"रखरखाव"}},
+    {"domain":"DIARY.TYPE","code":"OBSERVATION","labels":{"en":"Observation","kn":"ನಿರೀಕ್ಷೆ","ta":"கவனிப்பு","hi":"अवलोकन"}},
+    {"domain":"DIARY.TYPE","code":"OTHER","labels":{"en":"Other","kn":"ಇತರೆ","ta":"மற்றவை","hi":"अन्य"}},
+
+    {"domain":"DIARY.STATUS","code":"PLANNED","labels":{"en":"Planned","kn":"ಯೋಜಿತ","ta":"திட்டமிடப்பட்டது","hi":"नियोजित"}},
+    {"domain":"DIARY.STATUS","code":"SNOOZED","labels":{"en":"Snoozed","kn":"ಮುಂದೂಡಲಾಗಿದೆ","ta":"ஒத்திவைக்கப்பட்டது","hi":"स्थगित"}},
+    {"domain":"DIARY.STATUS","code":"DONE","labels":{"en":"Done","kn":"ಮುಗಿದಿದೆ","ta":"முடிந்தது","hi":"पूरा"}},
+    {"domain":"DIARY.STATUS","code":"PARTIAL","labels":{"en":"Partial","kn":"ಪಾಲು","ta":"பகுதியளவு","hi":"आंशिक"}},
+    {"domain":"DIARY.STATUS","code":"SKIPPED","labels":{"en":"Skipped","kn":"ಬಿಟ್ಟಿದೆ","ta":"தவிர்க்கப்பட்டது","hi":"छोड़ा"}},
+    {"domain":"DIARY.STATUS","code":"DISMISSED","labels":{"en":"Dismissed","kn":"ರದ್ದು ಮಾಡಲಾಗಿದೆ","ta":"நிராகரிக்கப்பட்டது","hi":"खारिज"}},
+
+    {"domain":"PARTY.CATEGORY","code":"WORKER","labels":{"en":"Worker","kn":"ಕಾರ್ಮಿಕ","ta":"தொழிலாளர்","hi":"मज़दूर"}},
+    {"domain":"PARTY.CATEGORY","code":"VENDOR","labels":{"en":"Vendor","kn":"ಮಾರಾಟಗಾರ","ta":"விற்பனையாளர்","hi":"विक्रेता"}},
+    {"domain":"PARTY.CATEGORY","code":"BUYER","labels":{"en":"Buyer","kn":"ಖರೀದಿದಾರ","ta":"வாங்குபவர்","hi":"खरीदार"}},
+    {"domain":"PARTY.CATEGORY","code":"OTHER","labels":{"en":"Other","kn":"ಇತರೆ","ta":"மற்றவை","hi":"अन्य"}},
+
+    {"domain":"GROUP.CATEGORY","code":"BORDER","labels":{"en":"Border","kn":"ಗಡಿ","ta":"எல்லை","hi":"सीमा"}},
+    {"domain":"GROUP.CATEGORY","code":"PARTITION","labels":{"en":"Partition","kn":"ವಿಭಾಗ","ta":"பிரிவு","hi":"विभाजन"}},
+    {"domain":"GROUP.CATEGORY","code":"LANDMARK","labels":{"en":"Landmark","kn":"ಲ್ಯಾಂಡ್‌ಮಾರ್ಕ್","ta":"குறியிடம்","hi":"सीमाचिह्न"}},
+    {"domain":"GROUP.CATEGORY","code":"PATH","labels":{"en":"Path","kn":"ಮಾರ್ಗ","ta":"பாதை","hi":"पथ"}},
+    {"domain":"GROUP.CATEGORY","code":"USER","labels":{"en":"User","kn":"ಬಳಕೆದಾರ","ta":"பயனர்","hi":"उपयोगकर्ता"}}
+  ]
+}
