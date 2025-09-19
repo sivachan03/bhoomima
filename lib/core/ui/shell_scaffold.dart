@@ -1,7 +1,12 @@
 import 'package:flutter/material.dart';
 import '../../l10n/app_localizations.dart';
-import '../vocab/vocab_repo.dart';
+// import '../vocab/vocab_repo.dart';
+import '../state/current_property.dart';
+import '../repos/property_repo.dart';
+import '../../modules/properties/properties_screen.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'dev_seed_button.dart';
 
 class ShellScaffold extends ConsumerStatefulWidget {
   const ShellScaffold({super.key});
@@ -61,6 +66,7 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
               PopupMenuItem(value: 'settings', child: Text(t.menu_settings)),
             ],
           ),
+          DevSeedButton()
         ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(60 + kTextTabBarHeight),
@@ -89,7 +95,7 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
                         ),
                       ],
                     ),
-                    Text(t.line2_property),
+                    _CurrentPropertyChip(),
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -189,6 +195,47 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _CurrentPropertyChip extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final t = AppLocalizations.of(context);
+    final currentId = ref.watch(currentPropertyIdProvider);
+    Widget label;
+    if (currentId == null) {
+      label = Text(t.line2_property);
+    } else {
+      final propAsync = ref.watch(currentPropertyProvider(currentId));
+      label = propAsync.when(
+        data: (p) => Text(p?.name ?? t.line2_property),
+        loading: () => const SizedBox(
+          width: 16,
+          height: 16,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+        error: (_, __) => Text(t.line2_property),
+      );
+    }
+
+    return GestureDetector(
+      onTap: () {
+        Navigator.of(
+          context,
+        ).push(MaterialPageRoute(builder: (_) => const PropertiesScreen()));
+      },
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.home, size: 16),
+          const SizedBox(width: 6),
+          label,
+          const SizedBox(width: 4),
+          const Icon(Icons.chevron_right, size: 16),
+        ],
       ),
     );
   }

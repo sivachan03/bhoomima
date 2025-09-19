@@ -13,7 +13,7 @@ extension GetPropertyCollection on Isar {
   IsarCollection<Property> get propertys => this.collection();
 }
 
-const PropertySchema = CollectionSchema(
+const PropertyCollectionSchema = CollectionSchema(
   name: r'Property',
   id: -6043426196410015316,
   properties: {
