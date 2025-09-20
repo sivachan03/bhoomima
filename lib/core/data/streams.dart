@@ -1,4 +1,3 @@
-/// Streams for Properties, Groups (per property), Points (per group)
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:isar/isar.dart';
 import '../db/isar_service.dart';

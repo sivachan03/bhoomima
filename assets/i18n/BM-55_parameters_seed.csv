@@ -1,0 +1,17 @@
+table,id,code,category,en,ml,kn,ta,hi,locked
+PointGroupCategory,1,border,group,Borders,,,,,true
+PointGroupCategory,2,partition,group,Partitions,,,,,true
+PointGroupCategory,3,landmark,group,Landmarks,,,,,true
+PointGroupCategory,4,path,group,Paths,,,,,true
+PropertyType,1,mapped,property,Mapped,,,,,true
+PropertyType,2,locationOnly,property,Not Mapped,,,,,true
+LogType,1,EXPENSE,type,Expense,,,,,false
+LogSubtype,101,LABOUR,subtype,Labour,,,,,false
+LogSubtype,102,FERTILIZER,subtype,Fertilizer,,,,,false
+LogSubtype,103,MANURE,subtype,Manure,,,,,false
+LogSubtype,104,SEEDS,subtype,Seeds,,,,,false
+UnitDef,1,m,distance,meter,,,,,true
+UnitDef,2,m2,area,square meter,,,,,true
+UnitDef,3,acre,area,acre,,,,,true
+UnitDef,4,hectare,area,hectare,,,,,true
+UnitDef,5,degC,temperature,°C,,,,,true

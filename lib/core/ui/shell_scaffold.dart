@@ -5,6 +5,7 @@ import '../state/current_property.dart';
 import '../repos/property_repo.dart';
 import '../../modules/properties/properties_screen.dart';
 import '../../modules/groups/groups_screen.dart';
+import '../../modules/parameters/parameters_screen.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'dev_seed_button.dart';
@@ -74,11 +75,18 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
                     MaterialPageRoute(builder: (_) => const GroupsScreen()),
                   );
                   break;
+                case 'params':
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const ParametersScreen()),
+                  );
+                  break;
               }
             },
             itemBuilder: (ctx) => [
               PopupMenuItem(value: 'props', child: Text(t.menu_properties)),
               PopupMenuItem(value: 'groups', child: Text(t.menu_groups)),
+              const PopupMenuItem(value: 'params', child: Text('Parameters')),
               PopupMenuItem(value: 'workers', child: Text(t.menu_workers)),
               PopupMenuItem(value: 'settings', child: Text(t.menu_settings)),
             ],

@@ -33,3 +33,4 @@ flutter:
   generate: true
   assets:
     - assets/seed_vocab.json
+    - assets/i18n/BM-55_parameters_seed.csv
