@@ -1,0 +1,15 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Get packages and build codegen",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"flutter pub get; dart run build_runner build --delete-conflicting-outputs"
+			]
+		}
+	]
+}

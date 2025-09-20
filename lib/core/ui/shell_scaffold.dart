@@ -7,6 +7,7 @@ import '../../modules/properties/properties_screen.dart';
 import '../../modules/groups/groups_screen.dart';
 import '../../modules/parameters/parameters_screen.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../modules/map/map_view.dart';
 
 import 'dev_seed_button.dart';
 
@@ -149,11 +150,11 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
       ),
       body: TabBarView(
         controller: _tabs,
-        children: const [
-          _PlaceholderView(label: 'Map View'),
-          _PlaceholderView(label: 'List View (Points)'),
-          _PlaceholderView(label: 'Diary'),
-          _PlaceholderView(label: 'Farm Log'),
+        children: [
+          const MapViewScreen(),
+          const _PlaceholderView(label: 'List View (Points)'),
+          const _PlaceholderView(label: 'Diary'),
+          const _PlaceholderView(label: 'Farm Log'),
         ],
       ),
       bottomNavigationBar: BottomAppBar(
