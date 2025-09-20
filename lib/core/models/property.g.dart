@@ -18,18 +18,43 @@ const PropertyCollectionSchema = CollectionSchema(
   id: -6043426196410015316,
   properties: {
     r'address': PropertySchema(id: 0, name: r'address', type: IsarType.string),
-    r'city': PropertySchema(id: 1, name: r'city', type: IsarType.string),
+    r'addressLine': PropertySchema(
+      id: 1,
+      name: r'addressLine',
+      type: IsarType.string,
+    ),
+    r'city': PropertySchema(id: 2, name: r'city', type: IsarType.string),
     r'directions': PropertySchema(
-      id: 2,
+      id: 3,
       name: r'directions',
       type: IsarType.string,
     ),
-    r'lat': PropertySchema(id: 3, name: r'lat', type: IsarType.double),
-    r'lon': PropertySchema(id: 4, name: r'lon', type: IsarType.double),
-    r'name': PropertySchema(id: 5, name: r'name', type: IsarType.string),
-    r'pin': PropertySchema(id: 6, name: r'pin', type: IsarType.string),
-    r'street': PropertySchema(id: 7, name: r'street', type: IsarType.string),
-    r'type': PropertySchema(id: 8, name: r'type', type: IsarType.string),
+    r'lat': PropertySchema(id: 4, name: r'lat', type: IsarType.double),
+    r'lon': PropertySchema(id: 5, name: r'lon', type: IsarType.double),
+    r'name': PropertySchema(id: 6, name: r'name', type: IsarType.string),
+    r'originAlt': PropertySchema(
+      id: 7,
+      name: r'originAlt',
+      type: IsarType.double,
+    ),
+    r'originLat': PropertySchema(
+      id: 8,
+      name: r'originLat',
+      type: IsarType.double,
+    ),
+    r'originLon': PropertySchema(
+      id: 9,
+      name: r'originLon',
+      type: IsarType.double,
+    ),
+    r'pin': PropertySchema(id: 10, name: r'pin', type: IsarType.string),
+    r'street': PropertySchema(id: 11, name: r'street', type: IsarType.string),
+    r'type': PropertySchema(id: 12, name: r'type', type: IsarType.string),
+    r'typeCode': PropertySchema(
+      id: 13,
+      name: r'typeCode',
+      type: IsarType.string,
+    ),
   },
   estimateSize: _propertyEstimateSize,
   serialize: _propertySerialize,
@@ -53,6 +78,12 @@ int _propertyEstimateSize(
   var bytesCount = offsets.last;
   {
     final value = object.address;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  {
+    final value = object.addressLine;
     if (value != null) {
       bytesCount += 3 + value.length * 3;
     }
@@ -83,6 +114,12 @@ int _propertyEstimateSize(
     }
   }
   bytesCount += 3 + object.type.length * 3;
+  {
+    final value = object.typeCode;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   return bytesCount;
 }
 
@@ -93,14 +130,19 @@ void _propertySerialize(
   Map<Type, List<int>> allOffsets,
 ) {
   writer.writeString(offsets[0], object.address);
-  writer.writeString(offsets[1], object.city);
-  writer.writeString(offsets[2], object.directions);
-  writer.writeDouble(offsets[3], object.lat);
-  writer.writeDouble(offsets[4], object.lon);
-  writer.writeString(offsets[5], object.name);
-  writer.writeString(offsets[6], object.pin);
-  writer.writeString(offsets[7], object.street);
-  writer.writeString(offsets[8], object.type);
+  writer.writeString(offsets[1], object.addressLine);
+  writer.writeString(offsets[2], object.city);
+  writer.writeString(offsets[3], object.directions);
+  writer.writeDouble(offsets[4], object.lat);
+  writer.writeDouble(offsets[5], object.lon);
+  writer.writeString(offsets[6], object.name);
+  writer.writeDouble(offsets[7], object.originAlt);
+  writer.writeDouble(offsets[8], object.originLat);
+  writer.writeDouble(offsets[9], object.originLon);
+  writer.writeString(offsets[10], object.pin);
+  writer.writeString(offsets[11], object.street);
+  writer.writeString(offsets[12], object.type);
+  writer.writeString(offsets[13], object.typeCode);
 }
 
 Property _propertyDeserialize(
@@ -111,15 +153,20 @@ Property _propertyDeserialize(
 ) {
   final object = Property();
   object.address = reader.readStringOrNull(offsets[0]);
-  object.city = reader.readStringOrNull(offsets[1]);
-  object.directions = reader.readStringOrNull(offsets[2]);
+  object.addressLine = reader.readStringOrNull(offsets[1]);
+  object.city = reader.readStringOrNull(offsets[2]);
+  object.directions = reader.readStringOrNull(offsets[3]);
   object.id = id;
-  object.lat = reader.readDoubleOrNull(offsets[3]);
-  object.lon = reader.readDoubleOrNull(offsets[4]);
-  object.name = reader.readString(offsets[5]);
-  object.pin = reader.readStringOrNull(offsets[6]);
-  object.street = reader.readStringOrNull(offsets[7]);
-  object.type = reader.readString(offsets[8]);
+  object.lat = reader.readDoubleOrNull(offsets[4]);
+  object.lon = reader.readDoubleOrNull(offsets[5]);
+  object.name = reader.readString(offsets[6]);
+  object.originAlt = reader.readDoubleOrNull(offsets[7]);
+  object.originLat = reader.readDoubleOrNull(offsets[8]);
+  object.originLon = reader.readDoubleOrNull(offsets[9]);
+  object.pin = reader.readStringOrNull(offsets[10]);
+  object.street = reader.readStringOrNull(offsets[11]);
+  object.type = reader.readString(offsets[12]);
+  object.typeCode = reader.readStringOrNull(offsets[13]);
   return object;
 }
 
@@ -137,17 +184,27 @@ P _propertyDeserializeProp<P>(
     case 2:
       return (reader.readStringOrNull(offset)) as P;
     case 3:
-      return (reader.readDoubleOrNull(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 4:
       return (reader.readDoubleOrNull(offset)) as P;
     case 5:
-      return (reader.readString(offset)) as P;
+      return (reader.readDoubleOrNull(offset)) as P;
     case 6:
-      return (reader.readStringOrNull(offset)) as P;
-    case 7:
-      return (reader.readStringOrNull(offset)) as P;
-    case 8:
       return (reader.readString(offset)) as P;
+    case 7:
+      return (reader.readDoubleOrNull(offset)) as P;
+    case 8:
+      return (reader.readDoubleOrNull(offset)) as P;
+    case 9:
+      return (reader.readDoubleOrNull(offset)) as P;
+    case 10:
+      return (reader.readStringOrNull(offset)) as P;
+    case 11:
+      return (reader.readStringOrNull(offset)) as P;
+    case 12:
+      return (reader.readString(offset)) as P;
+    case 13:
+      return (reader.readStringOrNull(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
   }
@@ -403,6 +460,171 @@ extension PropertyQueryFilter
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(
         FilterCondition.greaterThan(property: r'address', value: ''),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> addressLineIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        const FilterCondition.isNull(property: r'addressLine'),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition>
+  addressLineIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        const FilterCondition.isNotNull(property: r'addressLine'),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> addressLineEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.equalTo(
+          property: r'addressLine',
+          value: value,
+          caseSensitive: caseSensitive,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition>
+  addressLineGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.greaterThan(
+          include: include,
+          property: r'addressLine',
+          value: value,
+          caseSensitive: caseSensitive,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> addressLineLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.lessThan(
+          include: include,
+          property: r'addressLine',
+          value: value,
+          caseSensitive: caseSensitive,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> addressLineBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.between(
+          property: r'addressLine',
+          lower: lower,
+          includeLower: includeLower,
+          upper: upper,
+          includeUpper: includeUpper,
+          caseSensitive: caseSensitive,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> addressLineStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.startsWith(
+          property: r'addressLine',
+          value: value,
+          caseSensitive: caseSensitive,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> addressLineEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.endsWith(
+          property: r'addressLine',
+          value: value,
+          caseSensitive: caseSensitive,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> addressLineContains(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.contains(
+          property: r'addressLine',
+          value: value,
+          caseSensitive: caseSensitive,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> addressLineMatches(
+    String pattern, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.matches(
+          property: r'addressLine',
+          wildcard: pattern,
+          caseSensitive: caseSensitive,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> addressLineIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.equalTo(property: r'addressLine', value: ''),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition>
+  addressLineIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.greaterThan(property: r'addressLine', value: ''),
       );
     });
   }
@@ -1108,6 +1330,264 @@ extension PropertyQueryFilter
     });
   }
 
+  QueryBuilder<Property, Property, QAfterFilterCondition> originAltIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        const FilterCondition.isNull(property: r'originAlt'),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> originAltIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        const FilterCondition.isNotNull(property: r'originAlt'),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> originAltEqualTo(
+    double? value, {
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.equalTo(
+          property: r'originAlt',
+          value: value,
+          epsilon: epsilon,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> originAltGreaterThan(
+    double? value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.greaterThan(
+          include: include,
+          property: r'originAlt',
+          value: value,
+          epsilon: epsilon,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> originAltLessThan(
+    double? value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.lessThan(
+          include: include,
+          property: r'originAlt',
+          value: value,
+          epsilon: epsilon,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> originAltBetween(
+    double? lower,
+    double? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.between(
+          property: r'originAlt',
+          lower: lower,
+          includeLower: includeLower,
+          upper: upper,
+          includeUpper: includeUpper,
+          epsilon: epsilon,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> originLatIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        const FilterCondition.isNull(property: r'originLat'),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> originLatIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        const FilterCondition.isNotNull(property: r'originLat'),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> originLatEqualTo(
+    double? value, {
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.equalTo(
+          property: r'originLat',
+          value: value,
+          epsilon: epsilon,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> originLatGreaterThan(
+    double? value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.greaterThan(
+          include: include,
+          property: r'originLat',
+          value: value,
+          epsilon: epsilon,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> originLatLessThan(
+    double? value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.lessThan(
+          include: include,
+          property: r'originLat',
+          value: value,
+          epsilon: epsilon,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> originLatBetween(
+    double? lower,
+    double? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.between(
+          property: r'originLat',
+          lower: lower,
+          includeLower: includeLower,
+          upper: upper,
+          includeUpper: includeUpper,
+          epsilon: epsilon,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> originLonIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        const FilterCondition.isNull(property: r'originLon'),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> originLonIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        const FilterCondition.isNotNull(property: r'originLon'),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> originLonEqualTo(
+    double? value, {
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.equalTo(
+          property: r'originLon',
+          value: value,
+          epsilon: epsilon,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> originLonGreaterThan(
+    double? value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.greaterThan(
+          include: include,
+          property: r'originLon',
+          value: value,
+          epsilon: epsilon,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> originLonLessThan(
+    double? value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.lessThan(
+          include: include,
+          property: r'originLon',
+          value: value,
+          epsilon: epsilon,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> originLonBetween(
+    double? lower,
+    double? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.between(
+          property: r'originLon',
+          lower: lower,
+          includeLower: includeLower,
+          upper: upper,
+          includeUpper: includeUpper,
+          epsilon: epsilon,
+        ),
+      );
+    });
+  }
+
   QueryBuilder<Property, Property, QAfterFilterCondition> pinIsNull() {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(
@@ -1577,6 +2057,168 @@ extension PropertyQueryFilter
       );
     });
   }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> typeCodeIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        const FilterCondition.isNull(property: r'typeCode'),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> typeCodeIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        const FilterCondition.isNotNull(property: r'typeCode'),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> typeCodeEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.equalTo(
+          property: r'typeCode',
+          value: value,
+          caseSensitive: caseSensitive,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> typeCodeGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.greaterThan(
+          include: include,
+          property: r'typeCode',
+          value: value,
+          caseSensitive: caseSensitive,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> typeCodeLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.lessThan(
+          include: include,
+          property: r'typeCode',
+          value: value,
+          caseSensitive: caseSensitive,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> typeCodeBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.between(
+          property: r'typeCode',
+          lower: lower,
+          includeLower: includeLower,
+          upper: upper,
+          includeUpper: includeUpper,
+          caseSensitive: caseSensitive,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> typeCodeStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.startsWith(
+          property: r'typeCode',
+          value: value,
+          caseSensitive: caseSensitive,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> typeCodeEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.endsWith(
+          property: r'typeCode',
+          value: value,
+          caseSensitive: caseSensitive,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> typeCodeContains(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.contains(
+          property: r'typeCode',
+          value: value,
+          caseSensitive: caseSensitive,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> typeCodeMatches(
+    String pattern, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.matches(
+          property: r'typeCode',
+          wildcard: pattern,
+          caseSensitive: caseSensitive,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> typeCodeIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.equalTo(property: r'typeCode', value: ''),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> typeCodeIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.greaterThan(property: r'typeCode', value: ''),
+      );
+    });
+  }
 }
 
 extension PropertyQueryObject
@@ -1595,6 +2237,18 @@ extension PropertyQuerySortBy on QueryBuilder<Property, Property, QSortBy> {
   QueryBuilder<Property, Property, QAfterSortBy> sortByAddressDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'address', Sort.desc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> sortByAddressLine() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'addressLine', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> sortByAddressLineDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'addressLine', Sort.desc);
     });
   }
 
@@ -1658,6 +2312,42 @@ extension PropertyQuerySortBy on QueryBuilder<Property, Property, QSortBy> {
     });
   }
 
+  QueryBuilder<Property, Property, QAfterSortBy> sortByOriginAlt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'originAlt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> sortByOriginAltDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'originAlt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> sortByOriginLat() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'originLat', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> sortByOriginLatDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'originLat', Sort.desc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> sortByOriginLon() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'originLon', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> sortByOriginLonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'originLon', Sort.desc);
+    });
+  }
+
   QueryBuilder<Property, Property, QAfterSortBy> sortByPin() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'pin', Sort.asc);
@@ -1693,6 +2383,18 @@ extension PropertyQuerySortBy on QueryBuilder<Property, Property, QSortBy> {
       return query.addSortBy(r'type', Sort.desc);
     });
   }
+
+  QueryBuilder<Property, Property, QAfterSortBy> sortByTypeCode() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'typeCode', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> sortByTypeCodeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'typeCode', Sort.desc);
+    });
+  }
 }
 
 extension PropertyQuerySortThenBy
@@ -1706,6 +2408,18 @@ extension PropertyQuerySortThenBy
   QueryBuilder<Property, Property, QAfterSortBy> thenByAddressDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'address', Sort.desc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> thenByAddressLine() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'addressLine', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> thenByAddressLineDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'addressLine', Sort.desc);
     });
   }
 
@@ -1781,6 +2495,42 @@ extension PropertyQuerySortThenBy
     });
   }
 
+  QueryBuilder<Property, Property, QAfterSortBy> thenByOriginAlt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'originAlt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> thenByOriginAltDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'originAlt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> thenByOriginLat() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'originLat', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> thenByOriginLatDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'originLat', Sort.desc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> thenByOriginLon() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'originLon', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> thenByOriginLonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'originLon', Sort.desc);
+    });
+  }
+
   QueryBuilder<Property, Property, QAfterSortBy> thenByPin() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'pin', Sort.asc);
@@ -1816,6 +2566,18 @@ extension PropertyQuerySortThenBy
       return query.addSortBy(r'type', Sort.desc);
     });
   }
+
+  QueryBuilder<Property, Property, QAfterSortBy> thenByTypeCode() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'typeCode', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> thenByTypeCodeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'typeCode', Sort.desc);
+    });
+  }
 }
 
 extension PropertyQueryWhereDistinct
@@ -1825,6 +2587,14 @@ extension PropertyQueryWhereDistinct
   }) {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'address', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<Property, Property, QDistinct> distinctByAddressLine({
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'addressLine', caseSensitive: caseSensitive);
     });
   }
 
@@ -1864,6 +2634,24 @@ extension PropertyQueryWhereDistinct
     });
   }
 
+  QueryBuilder<Property, Property, QDistinct> distinctByOriginAlt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'originAlt');
+    });
+  }
+
+  QueryBuilder<Property, Property, QDistinct> distinctByOriginLat() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'originLat');
+    });
+  }
+
+  QueryBuilder<Property, Property, QDistinct> distinctByOriginLon() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'originLon');
+    });
+  }
+
   QueryBuilder<Property, Property, QDistinct> distinctByPin({
     bool caseSensitive = true,
   }) {
@@ -1887,6 +2675,14 @@ extension PropertyQueryWhereDistinct
       return query.addDistinctBy(r'type', caseSensitive: caseSensitive);
     });
   }
+
+  QueryBuilder<Property, Property, QDistinct> distinctByTypeCode({
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'typeCode', caseSensitive: caseSensitive);
+    });
+  }
 }
 
 extension PropertyQueryProperty
@@ -1900,6 +2696,12 @@ extension PropertyQueryProperty
   QueryBuilder<Property, String?, QQueryOperations> addressProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'address');
+    });
+  }
+
+  QueryBuilder<Property, String?, QQueryOperations> addressLineProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'addressLine');
     });
   }
 
@@ -1933,6 +2735,24 @@ extension PropertyQueryProperty
     });
   }
 
+  QueryBuilder<Property, double?, QQueryOperations> originAltProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'originAlt');
+    });
+  }
+
+  QueryBuilder<Property, double?, QQueryOperations> originLatProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'originLat');
+    });
+  }
+
+  QueryBuilder<Property, double?, QQueryOperations> originLonProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'originLon');
+    });
+  }
+
   QueryBuilder<Property, String?, QQueryOperations> pinProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'pin');
@@ -1948,6 +2768,12 @@ extension PropertyQueryProperty
   QueryBuilder<Property, String, QQueryOperations> typeProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'type');
+    });
+  }
+
+  QueryBuilder<Property, String?, QQueryOperations> typeCodeProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'typeCode');
     });
   }
 }

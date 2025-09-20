@@ -8,6 +8,7 @@ import '../../modules/groups/groups_screen.dart';
 import '../../modules/parameters/parameters_screen.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../modules/map/map_view.dart';
+import '../services/gps_service.dart';
 
 import 'dev_seed_button.dart';
 
@@ -31,6 +32,7 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
   @override
   Widget build(BuildContext context) {
     final t = AppLocalizations.of(context);
+    final gpsAsync = ref.watch(gpsStreamProvider);
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 72, // allow space for app name + tagline
@@ -127,8 +129,15 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
                       children: [
                         const Icon(Icons.gps_fixed, size: 16),
                         const SizedBox(width: 6),
-                        Text(
-                          '${t.line2_gps}: ${t.gps_accuracy}/ ${t.gps_stability}',
+                        gpsAsync.when(
+                          data: (s) {
+                            final text = (s == null)
+                                ? 'GPS: —'
+                                : 'GPS: ±${s.acc.toStringAsFixed(1)}m • σ ${s.stability.toStringAsFixed(2)}m';
+                            return Text(text);
+                          },
+                          loading: () => const Text('GPS: …'),
+                          error: (_, __) => const Text('GPS: —'),
                         ),
                       ],
                     ),
