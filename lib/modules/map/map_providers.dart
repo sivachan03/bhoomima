@@ -20,6 +20,21 @@ final borderGroupsProvider = StreamProvider<List<PointGroup>>((ref) async* {
       .watch(fireImmediately: true);
 });
 
+final partitionGroupsProvider = StreamProvider<List<PointGroup>>((ref) async* {
+  final pid = ref.watch(currentPropertyIdProvider);
+  if (pid == null) {
+    yield <PointGroup>[];
+    return;
+  }
+  final isar = await IsarService.open();
+  yield* isar.pointGroups
+      .filter()
+      .propertyIdEqualTo(pid)
+      .and()
+      .categoryEqualTo('partition')
+      .watch(fireImmediately: true);
+});
+
 final pointsByGroupProvider = StreamProvider.family<List<Point>, int>((
   ref,
   gid,

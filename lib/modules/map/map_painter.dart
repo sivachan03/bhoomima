@@ -11,16 +11,20 @@ class MapPainter extends CustomPainter {
     required this.scale,
     required this.rotation,
     required this.borderGroups,
+    required this.partitionGroups,
     required this.ref,
     required this.gps,
+    this.showPointLabels = false,
   });
   final ProjectionService projection;
   final Offset pan;
   final double scale;
   final double rotation;
   final List borderGroups;
+  final List partitionGroups;
   final WidgetRef ref;
   final GpsSample? gps;
+  final bool showPointLabels;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -33,6 +37,10 @@ class MapPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.0 / scale
       ..color = Colors.green;
+    final partitionPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2 / scale
+      ..color = Colors.green.withOpacity(0.8);
 
     for (final g in borderGroups) {
       final ptsAsync = ref.read(pointsByGroupProvider(g.id));
@@ -56,16 +64,69 @@ class MapPainter extends CustomPainter {
       }
     }
 
+    for (final g in partitionGroups) {
+      final ptsAsync = ref.read(pointsByGroupProvider(g.id));
+      final pts = ptsAsync.asData?.value ?? const [];
+      if (pts.isEmpty) continue;
+      final path = Path();
+      var moved = false;
+      for (final p in pts) {
+        final xy = projection.project(p.lat, p.lon);
+        if (!moved) {
+          path.moveTo(xy.dx, xy.dy);
+          moved = true;
+        } else {
+          path.lineTo(xy.dx, xy.dy);
+        }
+      }
+      final bounds = path.getBounds();
+      if (!bounds.isEmpty) {
+        path.close();
+        canvas.drawPath(path, partitionPaint);
+      }
+    }
+
     if (gps != null) {
       final xy = projection.project(
         gps!.position.latitude,
         gps!.position.longitude,
       );
       final acc = gps!.acc;
-      final accPaint = Paint()..color = Colors.blue.withValues(alpha: 0.15);
+      final accPaint = Paint()..color = Colors.blue.withOpacity(0.15);
       final dot = Paint()..color = Colors.blue;
       canvas.drawCircle(xy, acc, accPaint);
       canvas.drawCircle(xy, 3.0 / scale, dot);
+    }
+
+    // Draw points (borders and partitions) as small dots; labels optional
+    final pointPaint = Paint()..color = Colors.black87;
+    final tp = TextPainter(textDirection: TextDirection.ltr);
+    void drawGroupPoints(dynamic g) {
+      final ptsAsync = ref.read(pointsByGroupProvider(g.id));
+      final pts = ptsAsync.asData?.value ?? const [];
+      if (pts.isEmpty) return;
+      var idx = 1;
+      for (final p in pts) {
+        final xy = projection.project(p.lat, p.lon);
+        canvas.drawCircle(xy, 2.5 / scale, pointPaint);
+        if (showPointLabels) {
+          final label = (p.name.isNotEmpty) ? p.name : idx.toString();
+          tp.text = TextSpan(
+            style: const TextStyle(fontSize: 11, color: Colors.black87),
+            text: label,
+          );
+          tp.layout();
+          tp.paint(canvas, xy + const Offset(4, -4));
+        }
+        idx++;
+      }
+    }
+
+    for (final g in borderGroups) {
+      drawGroupPoints(g);
+    }
+    for (final g in partitionGroups) {
+      drawGroupPoints(g);
     }
   }
 
@@ -75,6 +136,8 @@ class MapPainter extends CustomPainter {
         scale != old.scale ||
         rotation != old.rotation ||
         borderGroups != old.borderGroups ||
-        gps != old.gps;
+        partitionGroups != old.partitionGroups ||
+        gps != old.gps ||
+        showPointLabels != old.showPointLabels;
   }
 }

@@ -6,6 +6,7 @@ import '../../core/services/gps_service.dart';
 import '../../core/services/compass_service.dart';
 import '../../core/services/projection_service.dart';
 import 'map_painter.dart';
+import '../../core/repos/property_repo.dart';
 
 class MapViewScreen extends ConsumerStatefulWidget {
   const MapViewScreen({super.key});
@@ -22,11 +23,28 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
   Widget build(BuildContext context) {
     final pid = ref.watch(currentPropertyIdProvider);
     final borders = ref.watch(borderGroupsProvider);
+    final partitions = ref.watch(partitionGroupsProvider);
     final gps = ref.watch(gpsStreamProvider);
     final heading = ref.watch(compassStreamProvider);
-
-    final lat0 = gps.value?.position.latitude ?? 0.0;
-    final lon0 = gps.value?.position.longitude ?? 0.0;
+    final propAsync = pid != null
+        ? ref.watch(currentPropertyProvider(pid))
+        : null;
+    // Projection origin priority: property.lat/lon -> originLat/originLon -> GPS -> (0,0)
+    double lat0 = 0.0, lon0 = 0.0;
+    final p = propAsync?.value;
+    if (p != null) {
+      if (p.lat != null && p.lon != null) {
+        lat0 = p.lat!;
+        lon0 = p.lon!;
+      } else if (p.originLat != null && p.originLon != null) {
+        lat0 = p.originLat!;
+        lon0 = p.originLon!;
+      }
+    }
+    if (lat0 == 0.0 && lon0 == 0.0) {
+      lat0 = gps.value?.position.latitude ?? 0.0;
+      lon0 = gps.value?.position.longitude ?? 0.0;
+    }
     final proj = ProjectionService(lat0, lon0);
 
     return Scaffold(
@@ -34,11 +52,19 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
       body: Stack(
         children: [
           GestureDetector(
+            behavior: HitTestBehavior.deferToChild,
             onScaleUpdate: (d) {
               setState(() {
                 _scale = (_scale * d.scale).clamp(0.2, 20.0);
                 _rotation += d.rotation;
                 _pan += d.focalPointDelta;
+              });
+            },
+            onDoubleTap: () {
+              setState(() {
+                _pan = Offset.zero;
+                _scale = 1.0;
+                _rotation = 0.0;
               });
             },
             child: CustomPaint(
@@ -48,6 +74,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
                 scale: _scale,
                 rotation: _rotation,
                 borderGroups: borders.value ?? const [],
+                partitionGroups: partitions.value ?? const [],
                 ref: ref,
                 gps: gps.value,
               ),
@@ -57,7 +84,14 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
           Positioned(
             right: 12,
             top: 12,
-            child: _CompassBadge(headingDeg: heading.value),
+            child: Transform.rotate(
+              angle: (heading.value ?? 0) * 3.1415926535 / 180.0,
+              child: const Icon(
+                Icons.navigation,
+                size: 28,
+                color: Colors.black87,
+              ),
+            ),
           ),
           if (pid != null)
             Positioned(
@@ -71,22 +105,4 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
   }
 }
 
-class _CompassBadge extends StatelessWidget {
-  const _CompassBadge({required this.headingDeg});
-  final double? headingDeg;
-  @override
-  Widget build(BuildContext context) {
-    final h = headingDeg ?? 0;
-    return Container(
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: Colors.black54,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Transform.rotate(
-        angle: -h * 3.1415926535 / 180.0,
-        child: const Icon(Icons.navigation, size: 28, color: Colors.white),
-      ),
-    );
-  }
-}
+// (compass badge widget moved to inline Transform for simplicity)
