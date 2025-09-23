@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'modules/groups/groups_screen.dart';
-import 'modules/points/points_list_screen.dart';
 import 'modules/settings/settings_screen.dart';
 import 'modules/parameters/parameters_screen.dart';
 import 'modules/properties/properties_screen.dart';
+import 'modules/farmers/farmers_screen.dart';
 
 void openTopMenu(BuildContext context, String value) {
   switch (value) {
@@ -24,7 +24,7 @@ void openTopMenu(BuildContext context, String value) {
     case 'workers':
       Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => const PartyScreen()),
+        MaterialPageRoute(builder: (_) => const FarmersScreen()),
       );
       break;
 

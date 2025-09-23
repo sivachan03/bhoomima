@@ -6,6 +6,9 @@ class Property {
   Id id = Isar.autoIncrement;
   late String name; // e.g., "My Farm"
 
+  // Optional owner reference (Farmer.id)
+  int? ownerId;
+
   // Existing field used across the app (keep for compatibility): 'mapped' | 'locationOnly'
   late String type;
   // New flexible code (aligns with DB-backed PropertyType codes). We'll populate both when saving.
@@ -21,6 +24,7 @@ class Property {
   // Reference location (center/entry) in WGS84
   double? lat; // nullable until set
   double? lon;
+  double? altitude; // meters
 
   // Freeform directions for reaching the place
   String? directions;

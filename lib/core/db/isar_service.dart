@@ -1,6 +1,7 @@
 import 'package:isar/isar.dart';
 import 'package:path_provider/path_provider.dart';
 import '../models/property.dart' as property_model;
+import '../models/farmer.dart' as farmer_model;
 import '../models/point_group.dart' as point_group_model;
 import '../models/point.dart' as point_model;
 import '../models/party.dart' as party_model;
@@ -9,6 +10,7 @@ import '../models/parameters/log_subtype.dart' as log_subtype_model;
 import '../models/parameters/point_group_category.dart' as pg_cat_model;
 import '../models/parameters/property_type.dart' as prop_type_model;
 import '../models/parameters/unit_def.dart' as unit_def_model;
+import '../models/system_event.dart' as system_event_model;
 
 class IsarService {
   static Isar? _isar;
@@ -18,6 +20,8 @@ class IsarService {
     _isar = await Isar.open(
       [
         property_model.PropertyCollectionSchema,
+        farmer_model.FarmerSchema,
+        system_event_model.SystemEventSchema,
         point_group_model.PointGroupSchema,
         point_model.PointSchema,
         party_model.PartySchema,

@@ -6,17 +6,17 @@ class ProjectionService {
   final double lat0;
   final double lon0;
   double get _k => math.cos(lat0 * math.pi / 180.0);
-  static const double _R = 6378137.0; // meters
+  static const double earthRadius = 6378137.0; // meters
 
   Offset project(double lat, double lon) {
-    final dx = _R * ((lon - lon0) * math.pi / 180.0) * _k;
-    final dy = _R * ((lat - lat0) * math.pi / 180.0);
+    final dx = earthRadius * ((lon - lon0) * math.pi / 180.0) * _k;
+    final dy = earthRadius * ((lat - lat0) * math.pi / 180.0);
     return Offset(dx, -dy);
   }
 
   Offset projectDelta(double dLat, double dLon) {
-    final dx = _R * (dLon * math.pi / 180.0) * _k;
-    final dy = _R * (dLat * math.pi / 180.0);
+    final dx = earthRadius * (dLon * math.pi / 180.0) * _k;
+    final dy = earthRadius * (dLat * math.pi / 180.0);
     return Offset(dx, -dy);
   }
 }

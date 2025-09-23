@@ -23,35 +23,41 @@ const PropertyCollectionSchema = CollectionSchema(
       name: r'addressLine',
       type: IsarType.string,
     ),
-    r'city': PropertySchema(id: 2, name: r'city', type: IsarType.string),
+    r'altitude': PropertySchema(
+      id: 2,
+      name: r'altitude',
+      type: IsarType.double,
+    ),
+    r'city': PropertySchema(id: 3, name: r'city', type: IsarType.string),
     r'directions': PropertySchema(
-      id: 3,
+      id: 4,
       name: r'directions',
       type: IsarType.string,
     ),
-    r'lat': PropertySchema(id: 4, name: r'lat', type: IsarType.double),
-    r'lon': PropertySchema(id: 5, name: r'lon', type: IsarType.double),
-    r'name': PropertySchema(id: 6, name: r'name', type: IsarType.string),
+    r'lat': PropertySchema(id: 5, name: r'lat', type: IsarType.double),
+    r'lon': PropertySchema(id: 6, name: r'lon', type: IsarType.double),
+    r'name': PropertySchema(id: 7, name: r'name', type: IsarType.string),
     r'originAlt': PropertySchema(
-      id: 7,
+      id: 8,
       name: r'originAlt',
       type: IsarType.double,
     ),
     r'originLat': PropertySchema(
-      id: 8,
+      id: 9,
       name: r'originLat',
       type: IsarType.double,
     ),
     r'originLon': PropertySchema(
-      id: 9,
+      id: 10,
       name: r'originLon',
       type: IsarType.double,
     ),
-    r'pin': PropertySchema(id: 10, name: r'pin', type: IsarType.string),
-    r'street': PropertySchema(id: 11, name: r'street', type: IsarType.string),
-    r'type': PropertySchema(id: 12, name: r'type', type: IsarType.string),
+    r'ownerId': PropertySchema(id: 11, name: r'ownerId', type: IsarType.long),
+    r'pin': PropertySchema(id: 12, name: r'pin', type: IsarType.string),
+    r'street': PropertySchema(id: 13, name: r'street', type: IsarType.string),
+    r'type': PropertySchema(id: 14, name: r'type', type: IsarType.string),
     r'typeCode': PropertySchema(
-      id: 13,
+      id: 15,
       name: r'typeCode',
       type: IsarType.string,
     ),
@@ -131,18 +137,20 @@ void _propertySerialize(
 ) {
   writer.writeString(offsets[0], object.address);
   writer.writeString(offsets[1], object.addressLine);
-  writer.writeString(offsets[2], object.city);
-  writer.writeString(offsets[3], object.directions);
-  writer.writeDouble(offsets[4], object.lat);
-  writer.writeDouble(offsets[5], object.lon);
-  writer.writeString(offsets[6], object.name);
-  writer.writeDouble(offsets[7], object.originAlt);
-  writer.writeDouble(offsets[8], object.originLat);
-  writer.writeDouble(offsets[9], object.originLon);
-  writer.writeString(offsets[10], object.pin);
-  writer.writeString(offsets[11], object.street);
-  writer.writeString(offsets[12], object.type);
-  writer.writeString(offsets[13], object.typeCode);
+  writer.writeDouble(offsets[2], object.altitude);
+  writer.writeString(offsets[3], object.city);
+  writer.writeString(offsets[4], object.directions);
+  writer.writeDouble(offsets[5], object.lat);
+  writer.writeDouble(offsets[6], object.lon);
+  writer.writeString(offsets[7], object.name);
+  writer.writeDouble(offsets[8], object.originAlt);
+  writer.writeDouble(offsets[9], object.originLat);
+  writer.writeDouble(offsets[10], object.originLon);
+  writer.writeLong(offsets[11], object.ownerId);
+  writer.writeString(offsets[12], object.pin);
+  writer.writeString(offsets[13], object.street);
+  writer.writeString(offsets[14], object.type);
+  writer.writeString(offsets[15], object.typeCode);
 }
 
 Property _propertyDeserialize(
@@ -154,19 +162,21 @@ Property _propertyDeserialize(
   final object = Property();
   object.address = reader.readStringOrNull(offsets[0]);
   object.addressLine = reader.readStringOrNull(offsets[1]);
-  object.city = reader.readStringOrNull(offsets[2]);
-  object.directions = reader.readStringOrNull(offsets[3]);
+  object.altitude = reader.readDoubleOrNull(offsets[2]);
+  object.city = reader.readStringOrNull(offsets[3]);
+  object.directions = reader.readStringOrNull(offsets[4]);
   object.id = id;
-  object.lat = reader.readDoubleOrNull(offsets[4]);
-  object.lon = reader.readDoubleOrNull(offsets[5]);
-  object.name = reader.readString(offsets[6]);
-  object.originAlt = reader.readDoubleOrNull(offsets[7]);
-  object.originLat = reader.readDoubleOrNull(offsets[8]);
-  object.originLon = reader.readDoubleOrNull(offsets[9]);
-  object.pin = reader.readStringOrNull(offsets[10]);
-  object.street = reader.readStringOrNull(offsets[11]);
-  object.type = reader.readString(offsets[12]);
-  object.typeCode = reader.readStringOrNull(offsets[13]);
+  object.lat = reader.readDoubleOrNull(offsets[5]);
+  object.lon = reader.readDoubleOrNull(offsets[6]);
+  object.name = reader.readString(offsets[7]);
+  object.originAlt = reader.readDoubleOrNull(offsets[8]);
+  object.originLat = reader.readDoubleOrNull(offsets[9]);
+  object.originLon = reader.readDoubleOrNull(offsets[10]);
+  object.ownerId = reader.readLongOrNull(offsets[11]);
+  object.pin = reader.readStringOrNull(offsets[12]);
+  object.street = reader.readStringOrNull(offsets[13]);
+  object.type = reader.readString(offsets[14]);
+  object.typeCode = reader.readStringOrNull(offsets[15]);
   return object;
 }
 
@@ -182,28 +192,32 @@ P _propertyDeserializeProp<P>(
     case 1:
       return (reader.readStringOrNull(offset)) as P;
     case 2:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readDoubleOrNull(offset)) as P;
     case 3:
       return (reader.readStringOrNull(offset)) as P;
     case 4:
-      return (reader.readDoubleOrNull(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 5:
       return (reader.readDoubleOrNull(offset)) as P;
     case 6:
-      return (reader.readString(offset)) as P;
-    case 7:
       return (reader.readDoubleOrNull(offset)) as P;
+    case 7:
+      return (reader.readString(offset)) as P;
     case 8:
       return (reader.readDoubleOrNull(offset)) as P;
     case 9:
       return (reader.readDoubleOrNull(offset)) as P;
     case 10:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readDoubleOrNull(offset)) as P;
     case 11:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readLongOrNull(offset)) as P;
     case 12:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 13:
+      return (reader.readStringOrNull(offset)) as P;
+    case 14:
+      return (reader.readString(offset)) as P;
+    case 15:
       return (reader.readStringOrNull(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -625,6 +639,92 @@ extension PropertyQueryFilter
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(
         FilterCondition.greaterThan(property: r'addressLine', value: ''),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> altitudeIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        const FilterCondition.isNull(property: r'altitude'),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> altitudeIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        const FilterCondition.isNotNull(property: r'altitude'),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> altitudeEqualTo(
+    double? value, {
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.equalTo(
+          property: r'altitude',
+          value: value,
+          epsilon: epsilon,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> altitudeGreaterThan(
+    double? value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.greaterThan(
+          include: include,
+          property: r'altitude',
+          value: value,
+          epsilon: epsilon,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> altitudeLessThan(
+    double? value, {
+    bool include = false,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.lessThan(
+          include: include,
+          property: r'altitude',
+          value: value,
+          epsilon: epsilon,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> altitudeBetween(
+    double? lower,
+    double? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    double epsilon = Query.epsilon,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.between(
+          property: r'altitude',
+          lower: lower,
+          includeLower: includeLower,
+          upper: upper,
+          includeUpper: includeUpper,
+          epsilon: epsilon,
+        ),
       );
     });
   }
@@ -1588,6 +1688,81 @@ extension PropertyQueryFilter
     });
   }
 
+  QueryBuilder<Property, Property, QAfterFilterCondition> ownerIdIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        const FilterCondition.isNull(property: r'ownerId'),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> ownerIdIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        const FilterCondition.isNotNull(property: r'ownerId'),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> ownerIdEqualTo(
+    int? value,
+  ) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.equalTo(property: r'ownerId', value: value),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> ownerIdGreaterThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.greaterThan(
+          include: include,
+          property: r'ownerId',
+          value: value,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> ownerIdLessThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.lessThan(
+          include: include,
+          property: r'ownerId',
+          value: value,
+        ),
+      );
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterFilterCondition> ownerIdBetween(
+    int? lower,
+    int? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(
+        FilterCondition.between(
+          property: r'ownerId',
+          lower: lower,
+          includeLower: includeLower,
+          upper: upper,
+          includeUpper: includeUpper,
+        ),
+      );
+    });
+  }
+
   QueryBuilder<Property, Property, QAfterFilterCondition> pinIsNull() {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(
@@ -2252,6 +2427,18 @@ extension PropertyQuerySortBy on QueryBuilder<Property, Property, QSortBy> {
     });
   }
 
+  QueryBuilder<Property, Property, QAfterSortBy> sortByAltitude() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'altitude', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> sortByAltitudeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'altitude', Sort.desc);
+    });
+  }
+
   QueryBuilder<Property, Property, QAfterSortBy> sortByCity() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'city', Sort.asc);
@@ -2348,6 +2535,18 @@ extension PropertyQuerySortBy on QueryBuilder<Property, Property, QSortBy> {
     });
   }
 
+  QueryBuilder<Property, Property, QAfterSortBy> sortByOwnerId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'ownerId', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> sortByOwnerIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'ownerId', Sort.desc);
+    });
+  }
+
   QueryBuilder<Property, Property, QAfterSortBy> sortByPin() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'pin', Sort.asc);
@@ -2420,6 +2619,18 @@ extension PropertyQuerySortThenBy
   QueryBuilder<Property, Property, QAfterSortBy> thenByAddressLineDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'addressLine', Sort.desc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> thenByAltitude() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'altitude', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> thenByAltitudeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'altitude', Sort.desc);
     });
   }
 
@@ -2531,6 +2742,18 @@ extension PropertyQuerySortThenBy
     });
   }
 
+  QueryBuilder<Property, Property, QAfterSortBy> thenByOwnerId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'ownerId', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Property, Property, QAfterSortBy> thenByOwnerIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'ownerId', Sort.desc);
+    });
+  }
+
   QueryBuilder<Property, Property, QAfterSortBy> thenByPin() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'pin', Sort.asc);
@@ -2598,6 +2821,12 @@ extension PropertyQueryWhereDistinct
     });
   }
 
+  QueryBuilder<Property, Property, QDistinct> distinctByAltitude() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'altitude');
+    });
+  }
+
   QueryBuilder<Property, Property, QDistinct> distinctByCity({
     bool caseSensitive = true,
   }) {
@@ -2649,6 +2878,12 @@ extension PropertyQueryWhereDistinct
   QueryBuilder<Property, Property, QDistinct> distinctByOriginLon() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'originLon');
+    });
+  }
+
+  QueryBuilder<Property, Property, QDistinct> distinctByOwnerId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'ownerId');
     });
   }
 
@@ -2705,6 +2940,12 @@ extension PropertyQueryProperty
     });
   }
 
+  QueryBuilder<Property, double?, QQueryOperations> altitudeProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'altitude');
+    });
+  }
+
   QueryBuilder<Property, String?, QQueryOperations> cityProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'city');
@@ -2750,6 +2991,12 @@ extension PropertyQueryProperty
   QueryBuilder<Property, double?, QQueryOperations> originLonProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'originLon');
+    });
+  }
+
+  QueryBuilder<Property, int?, QQueryOperations> ownerIdProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'ownerId');
     });
   }
 

@@ -4,11 +4,10 @@ import '../../l10n/app_localizations.dart';
 import '../state/current_property.dart';
 import '../repos/property_repo.dart';
 import '../../modules/properties/properties_screen.dart';
-import '../../modules/groups/groups_screen.dart';
-import '../../modules/parameters/parameters_screen.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../modules/map/map_view.dart';
 import '../services/gps_service.dart';
+import '../../app_menu_wiring.dart';
 
 import 'dev_seed_button.dart';
 
@@ -64,28 +63,7 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
           ),
           PopupMenuButton<String>(
             tooltip: t.menu_top,
-            onSelected: (v) {
-              switch (v) {
-                case 'props':
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const PropertiesScreen()),
-                  );
-                  break;
-                case 'groups':
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const GroupsScreen()),
-                  );
-                  break;
-                case 'params':
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const ParametersScreen()),
-                  );
-                  break;
-              }
-            },
+            onSelected: (v) => openTopMenu(context, v),
             itemBuilder: (ctx) => [
               PopupMenuItem(value: 'props', child: Text(t.menu_properties)),
               PopupMenuItem(value: 'groups', child: Text(t.menu_groups)),

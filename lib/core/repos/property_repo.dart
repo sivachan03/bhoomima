@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:isar/isar.dart';
 import '../models/property.dart';
+import '../models/system_event.dart';
 import '../models/point.dart';
 import '../models/point_group.dart';
 import '../state/current_property.dart';
@@ -26,6 +27,49 @@ class PropertyRepo extends BaseRepo {
   Future<int> upsert(Property p) async {
     final isar = await db;
     return isar.writeTxn(() => isar.propertys.put(p));
+  }
+
+  /// Link a Farmer as owner for the given property and log the event.
+  Future<void> linkOwner({
+    required int propertyId,
+    required int ownerId,
+  }) async {
+    final isar = await db;
+    await isar.writeTxn(() async {
+      final p = await isar.propertys.get(propertyId);
+      if (p == null) return;
+      final old = p.ownerId;
+      p.ownerId = ownerId;
+      await isar.propertys.put(p);
+      final e = SystemEvent()
+        ..type = 'STRUCTURE'
+        ..subType = 'LINK_OWNER'
+        ..description = 'LINK_OWNER'
+        ..payloadJson =
+            '{"propertyId":$propertyId,"oldOwnerId":${old ?? 'null'},"newOwnerId":$ownerId}'
+        ..at = DateTime.now();
+      await isar.systemEvents.put(e);
+    });
+  }
+
+  /// Unlink the owner (if any) from the property and log the event.
+  Future<void> unlinkOwner({required int propertyId}) async {
+    final isar = await db;
+    await isar.writeTxn(() async {
+      final p = await isar.propertys.get(propertyId);
+      if (p == null) return;
+      final old = p.ownerId;
+      p.ownerId = null;
+      await isar.propertys.put(p);
+      final e = SystemEvent()
+        ..type = 'STRUCTURE'
+        ..subType = 'UNLINK_OWNER'
+        ..description = 'UNLINK_OWNER'
+        ..payloadJson =
+            '{"propertyId":$propertyId,"oldOwnerId":${old ?? 'null'}}'
+        ..at = DateTime.now();
+      await isar.systemEvents.put(e);
+    });
   }
 
   Future<void> delete(Id id) async {

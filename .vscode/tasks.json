@@ -10,6 +10,21 @@
 				"-Command",
 				"flutter pub get; dart run build_runner build --delete-conflicting-outputs"
 			]
+		},
+		{
+			"label": "Pub get and codegen",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"flutter pub get; dart run build_runner build --delete-conflicting-outputs"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$dart-build_runner"
+			],
+			"group": "build"
 		}
 	]
 }

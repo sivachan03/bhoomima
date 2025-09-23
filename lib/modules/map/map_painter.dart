@@ -62,7 +62,7 @@ class MapPainter extends CustomPainter {
         gps!.position.longitude,
       );
       final acc = gps!.acc;
-      final accPaint = Paint()..color = Colors.blue.withOpacity(0.15);
+      final accPaint = Paint()..color = Colors.blue.withValues(alpha: 0.15);
       final dot = Paint()..color = Colors.blue;
       canvas.drawCircle(xy, acc, accPaint);
       canvas.drawCircle(xy, 3.0 / scale, dot);
