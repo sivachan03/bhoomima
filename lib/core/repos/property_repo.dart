@@ -5,6 +5,7 @@ import '../models/system_event.dart';
 import '../models/point.dart';
 import '../models/point_group.dart';
 import '../state/current_property.dart';
+import '../../app_state/active_property.dart';
 import '../bootstrap/ensure_default_property.dart';
 import 'base_repo.dart';
 
@@ -191,6 +192,10 @@ class PropertyRepo extends BaseRepo {
         await ensureDefaultProperty(ref);
       }
     }
+    // Notify ActiveProperty to keep it consistent
+    await ref
+        .read(activePropertyProvider.notifier)
+        .onPropertyDeleted(propertyId);
   }
 }
 

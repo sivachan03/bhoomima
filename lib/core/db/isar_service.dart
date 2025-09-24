@@ -11,6 +11,7 @@ import '../models/parameters/point_group_category.dart' as pg_cat_model;
 import '../models/parameters/property_type.dart' as prop_type_model;
 import '../models/parameters/unit_def.dart' as unit_def_model;
 import '../models/system_event.dart' as system_event_model;
+import '../models/app_settings.dart' as app_settings_model;
 
 class IsarService {
   static Isar? _isar;
@@ -19,6 +20,7 @@ class IsarService {
     final dir = await getApplicationDocumentsDirectory();
     _isar = await Isar.open(
       [
+        app_settings_model.AppSettingsSchema,
         property_model.PropertyCollectionSchema,
         farmer_model.FarmerSchema,
         system_event_model.SystemEventSchema,

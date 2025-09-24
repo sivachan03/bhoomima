@@ -3,10 +3,11 @@ import 'package:isar/isar.dart';
 import '../../core/db/isar_service.dart';
 import '../../core/models/point_group.dart';
 import '../../core/models/point.dart';
-import '../../core/state/current_property.dart';
+import '../../app_state/active_property.dart';
 
 final borderGroupsProvider = StreamProvider<List<PointGroup>>((ref) async* {
-  final pid = ref.watch(currentPropertyIdProvider);
+  final active = ref.watch(activePropertyProvider);
+  final pid = active.asData?.value?.id;
   if (pid == null) {
     yield <PointGroup>[];
     return;
@@ -21,7 +22,8 @@ final borderGroupsProvider = StreamProvider<List<PointGroup>>((ref) async* {
 });
 
 final partitionGroupsProvider = StreamProvider<List<PointGroup>>((ref) async* {
-  final pid = ref.watch(currentPropertyIdProvider);
+  final active = ref.watch(activePropertyProvider);
+  final pid = active.asData?.value?.id;
   if (pid == null) {
     yield <PointGroup>[];
     return;

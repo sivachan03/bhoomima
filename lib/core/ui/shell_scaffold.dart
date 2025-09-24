@@ -1,13 +1,19 @@
 import 'package:flutter/material.dart';
 import '../../l10n/app_localizations.dart';
 // import '../vocab/vocab_repo.dart';
-import '../state/current_property.dart';
-import '../repos/property_repo.dart';
-import '../../modules/properties/properties_screen.dart';
+// current_property and properties_screen now handled via Line2PropertyChip and picker
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../modules/map/map_view.dart';
 import '../services/gps_service.dart';
 import '../../app_menu_wiring.dart';
+import '../../modules/shell/line2_property_chip.dart';
+import '../../modules/shared/bottom_plus_menu.dart';
+import '../../modules/shared/add_point_method_sheet.dart';
+import '../../app_state/active_property.dart';
+import '../../modules/points/add_point_gps_sheet.dart';
+import '../../modules/points/add_point_tap_mode.dart';
+import '../../modules/log/add_log_screen.dart';
+import '../../modules/diary/add_diary_task_screen.dart';
 
 import 'dev_seed_button.dart';
 
@@ -101,7 +107,8 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
                         ),
                       ],
                     ),
-                    _CurrentPropertyChip(),
+                    const SizedBox(width: 8),
+                    const Line2PropertyChip(),
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -149,7 +156,7 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
           children: [
             const SizedBox(width: 8),
             ElevatedButton.icon(
-              onPressed: _onAddPressed,
+              onPressed: _onPlusMenu,
               icon: const Icon(Icons.add),
               label: Text(t.bottom_add),
             ),
@@ -183,76 +190,74 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
     );
   }
 
-  void _onAddPressed() {
-    final t = AppLocalizations.of(context);
-    showModalBottomSheet(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+  Future<void> _onPlusMenu() async {
+    final choice = await openBottomPlusMenu(context);
+    if (choice == null) return;
+    switch (choice) {
+      case 'add_point':
+        return _onAddPoint();
+      case 'add_log':
+        if (!mounted) return;
+        await Navigator.of(
+          context,
+        ).push(MaterialPageRoute(builder: (_) => const AddLogScreen()));
+        return;
+      case 'add_diary':
+        if (!mounted) return;
+        await Navigator.of(
+          context,
+        ).push(MaterialPageRoute(builder: (_) => const AddDiaryTaskScreen()));
+        return;
+    }
+  }
+
+  Future<void> _onAddPoint() async {
+    // Ensure active property exists
+    final active = ref.read(activePropertyProvider);
+    if (active.value == null) {
+      // Use Line-2 chip picker for consistency
+      // ignore: use_build_context_synchronously
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select or create a property first')),
+      );
+      return;
+    }
+    final method = await openAddPointMethodSheet(context);
+    if (method == null) return;
+    if (method == 'gps') {
+      if (!mounted) return;
+      await showModalBottomSheet<bool>(
+        context: context,
+        isScrollControlled: true,
+        builder: (_) => AddPointGpsSheet(
+          onSave: (r) async {
+            // TODO: Save via PointRepo using active property and optional groupId
+          },
+        ),
+      );
+    } else if (method == 'tap') {
+      if (!mounted) return;
+      // Show an overlay on top of the map asking for a tap
+      showDialog(
+        context: context,
+        barrierColor: Colors.transparent,
+        builder: (_) => Stack(
           children: [
-            ListTile(
-              leading: const Icon(Icons.add_location),
-              title: Text(t.add_point),
-              onTap: () => Navigator.pop(ctx),
-            ),
-            ListTile(
-              leading: const Icon(Icons.note_add),
-              title: Text(t.add_log),
-              onTap: () => Navigator.pop(ctx),
-            ),
-            ListTile(
-              leading: const Icon(Icons.event),
-              title: Text(t.add_diary),
-              onTap: () => Navigator.pop(ctx),
+            const MapViewScreen(),
+            TapToPlaceOverlay(
+              onTapPlaced: (pos) async {
+                // TODO: Convert canvas pos -> lat/lon using current ProjectionService
+                // and save via PointRepo
+              },
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _CurrentPropertyChip extends ConsumerWidget {
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final t = AppLocalizations.of(context);
-    final currentId = ref.watch(currentPropertyIdProvider);
-    Widget label;
-    if (currentId == null) {
-      label = Text(t.line2_property);
-    } else {
-      final propAsync = ref.watch(currentPropertyProvider(currentId));
-      label = propAsync.when(
-        data: (p) => Text(p?.name ?? t.line2_property),
-        loading: () => const SizedBox(
-          width: 16,
-          height: 16,
-          child: CircularProgressIndicator(strokeWidth: 2),
-        ),
-        error: (_, __) => Text(t.line2_property),
       );
     }
-
-    return GestureDetector(
-      onTap: () {
-        Navigator.of(
-          context,
-        ).push(MaterialPageRoute(builder: (_) => const PropertiesScreen()));
-      },
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(Icons.home, size: 16),
-          const SizedBox(width: 6),
-          label,
-          const SizedBox(width: 4),
-          const Icon(Icons.chevron_right, size: 16),
-        ],
-      ),
-    );
   }
 }
+
+// Legacy _CurrentPropertyChip replaced by Line2PropertyChip
 
 class _PlaceholderView extends StatelessWidget {
   const _PlaceholderView({required this.label});

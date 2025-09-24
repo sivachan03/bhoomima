@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../core/state/current_property.dart';
+import '../../app_state/active_property.dart';
 import 'map_providers.dart';
 import '../../core/services/gps_service.dart';
 import '../../core/services/compass_service.dart';
 import '../../core/services/projection_service.dart';
 import 'map_painter.dart';
-import '../../core/repos/property_repo.dart';
 
 class MapViewScreen extends ConsumerStatefulWidget {
   const MapViewScreen({super.key});
@@ -21,24 +20,21 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final pid = ref.watch(currentPropertyIdProvider);
+    final active = ref.watch(activePropertyProvider);
+    final prop = active.asData?.value;
     final borders = ref.watch(borderGroupsProvider);
     final partitions = ref.watch(partitionGroupsProvider);
     final gps = ref.watch(gpsStreamProvider);
     final heading = ref.watch(compassStreamProvider);
-    final propAsync = pid != null
-        ? ref.watch(currentPropertyProvider(pid))
-        : null;
     // Projection origin priority: property.lat/lon -> originLat/originLon -> GPS -> (0,0)
     double lat0 = 0.0, lon0 = 0.0;
-    final p = propAsync?.value;
-    if (p != null) {
-      if (p.lat != null && p.lon != null) {
-        lat0 = p.lat!;
-        lon0 = p.lon!;
-      } else if (p.originLat != null && p.originLon != null) {
-        lat0 = p.originLat!;
-        lon0 = p.originLon!;
+    if (prop != null) {
+      if (prop.lat != null && prop.lon != null) {
+        lat0 = prop.lat!;
+        lon0 = prop.lon!;
+      } else if (prop.originLat != null && prop.originLon != null) {
+        lat0 = prop.originLat!;
+        lon0 = prop.originLon!;
       }
     }
     if (lat0 == 0.0 && lon0 == 0.0) {
@@ -93,11 +89,11 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
               ),
             ),
           ),
-          if (pid != null)
+          if (prop != null)
             Positioned(
               left: 12,
               top: 12,
-              child: Chip(label: Text('Property $pid')),
+              child: Chip(label: Text('Property ${prop.name}')),
             ),
         ],
       ),
