@@ -5,9 +5,9 @@ part 'point_group.g.dart';
 class PointGroup {
   Id id = Isar.autoIncrement;
   late int propertyId;
-  late String name;
-  // border | partition | landmark | path | user
-  late String category;
-  // default groups locked
-  late bool defaultFlag;
+  String name = '';
+  String? category; // may be null for future dynamic types
+  bool locked = false; // true for system/template-created groups
+  String? templateCode; // link back to GroupTemplate.code
+  bool defaultFlag = false; // legacy flag kept for backward compatibility
 }

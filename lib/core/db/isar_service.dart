@@ -12,6 +12,8 @@ import '../models/parameters/property_type.dart' as prop_type_model;
 import '../models/parameters/unit_def.dart' as unit_def_model;
 import '../models/system_event.dart' as system_event_model;
 import '../models/app_settings.dart' as app_settings_model;
+import '../models/catalog_item.dart' as catalog_item_model;
+import '../models/group_template.dart' as group_template_model;
 
 class IsarService {
   static Isar? _isar;
@@ -22,6 +24,8 @@ class IsarService {
       [
         app_settings_model.AppSettingsSchema,
         property_model.PropertyCollectionSchema,
+        catalog_item_model.CatalogItemSchema,
+        group_template_model.GroupTemplateSchema,
         farmer_model.FarmerSchema,
         system_event_model.SystemEventSchema,
         point_group_model.PointGroupSchema,

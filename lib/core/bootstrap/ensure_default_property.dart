@@ -2,11 +2,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:isar/isar.dart';
 import '../db/isar_service.dart';
 import '../models/property.dart';
-import '../models/point_group.dart';
 import '../state/current_property.dart';
+import '../seed/seed_catalog.dart';
 
 Future<void> ensureDefaultProperty(WidgetRef ref) async {
   final isar = await IsarService.open();
+  // Seed global catalog/templates (idempotent)
+  await SeedCatalog.run(isar);
+
   final count = await isar.propertys.count();
 
   if (count == 0) {
@@ -16,20 +19,9 @@ Future<void> ensureDefaultProperty(WidgetRef ref) async {
     late int id;
     await isar.writeTxn(() async {
       id = await isar.propertys.put(prop);
-      for (final e in const [
-        ('Borders','border'),
-        ('Partitions','partition'),
-        ('Landmarks','landmark'),
-        ('Paths','path'),
-      ]) {
-        final g = PointGroup()
-          ..propertyId = id
-          ..name = e.$1
-          ..category = e.$2
-          ..defaultFlag = true;
-        await isar.pointGroups.put(g);
-      }
     });
+    // Ensure default template-driven groups
+    await SeedCatalog.ensureDefaultGroupsForProperty(isar, prop);
     await ref.read(currentPropertyIdProvider.notifier).set(id);
     return;
   }
@@ -39,6 +31,14 @@ Future<void> ensureDefaultProperty(WidgetRef ref) async {
     final first = await isar.propertys.where().findFirst();
     if (first != null) {
       await ref.read(currentPropertyIdProvider.notifier).set(first.id);
+      // Backfill default groups for existing first property (legacy install)
+      await SeedCatalog.ensureDefaultGroupsForProperty(isar, first);
     }
+  }
+
+  // Optionally ensure all existing properties have default groups (migration path)
+  final props = await isar.propertys.where().findAll();
+  for (final p in props) {
+    await SeedCatalog.ensureDefaultGroupsForProperty(isar, p);
   }
 }

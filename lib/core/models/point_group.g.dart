@@ -27,15 +27,25 @@ const PointGroupSchema = CollectionSchema(
       name: r'defaultFlag',
       type: IsarType.bool,
     ),
-    r'name': PropertySchema(
+    r'locked': PropertySchema(
       id: 2,
+      name: r'locked',
+      type: IsarType.bool,
+    ),
+    r'name': PropertySchema(
+      id: 3,
       name: r'name',
       type: IsarType.string,
     ),
     r'propertyId': PropertySchema(
-      id: 3,
+      id: 4,
       name: r'propertyId',
       type: IsarType.long,
+    ),
+    r'templateCode': PropertySchema(
+      id: 5,
+      name: r'templateCode',
+      type: IsarType.string,
     )
   },
   estimateSize: _pointGroupEstimateSize,
@@ -58,8 +68,19 @@ int _pointGroupEstimateSize(
   Map<Type, List<int>> allOffsets,
 ) {
   var bytesCount = offsets.last;
-  bytesCount += 3 + object.category.length * 3;
+  {
+    final value = object.category;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.name.length * 3;
+  {
+    final value = object.templateCode;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   return bytesCount;
 }
 
@@ -71,8 +92,10 @@ void _pointGroupSerialize(
 ) {
   writer.writeString(offsets[0], object.category);
   writer.writeBool(offsets[1], object.defaultFlag);
-  writer.writeString(offsets[2], object.name);
-  writer.writeLong(offsets[3], object.propertyId);
+  writer.writeBool(offsets[2], object.locked);
+  writer.writeString(offsets[3], object.name);
+  writer.writeLong(offsets[4], object.propertyId);
+  writer.writeString(offsets[5], object.templateCode);
 }
 
 PointGroup _pointGroupDeserialize(
@@ -82,11 +105,13 @@ PointGroup _pointGroupDeserialize(
   Map<Type, List<int>> allOffsets,
 ) {
   final object = PointGroup();
-  object.category = reader.readString(offsets[0]);
+  object.category = reader.readStringOrNull(offsets[0]);
   object.defaultFlag = reader.readBool(offsets[1]);
   object.id = id;
-  object.name = reader.readString(offsets[2]);
-  object.propertyId = reader.readLong(offsets[3]);
+  object.locked = reader.readBool(offsets[2]);
+  object.name = reader.readString(offsets[3]);
+  object.propertyId = reader.readLong(offsets[4]);
+  object.templateCode = reader.readStringOrNull(offsets[5]);
   return object;
 }
 
@@ -98,13 +123,17 @@ P _pointGroupDeserializeProp<P>(
 ) {
   switch (propertyId) {
     case 0:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 1:
       return (reader.readBool(offset)) as P;
     case 2:
-      return (reader.readString(offset)) as P;
+      return (reader.readBool(offset)) as P;
     case 3:
+      return (reader.readString(offset)) as P;
+    case 4:
       return (reader.readLong(offset)) as P;
+    case 5:
+      return (reader.readStringOrNull(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
   }
@@ -201,8 +230,25 @@ extension PointGroupQueryWhere
 
 extension PointGroupQueryFilter
     on QueryBuilder<PointGroup, PointGroup, QFilterCondition> {
+  QueryBuilder<PointGroup, PointGroup, QAfterFilterCondition> categoryIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'category',
+      ));
+    });
+  }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterFilterCondition>
+      categoryIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'category',
+      ));
+    });
+  }
+
   QueryBuilder<PointGroup, PointGroup, QAfterFilterCondition> categoryEqualTo(
-    String value, {
+    String? value, {
     bool caseSensitive = true,
   }) {
     return QueryBuilder.apply(this, (query) {
@@ -216,7 +262,7 @@ extension PointGroupQueryFilter
 
   QueryBuilder<PointGroup, PointGroup, QAfterFilterCondition>
       categoryGreaterThan(
-    String value, {
+    String? value, {
     bool include = false,
     bool caseSensitive = true,
   }) {
@@ -231,7 +277,7 @@ extension PointGroupQueryFilter
   }
 
   QueryBuilder<PointGroup, PointGroup, QAfterFilterCondition> categoryLessThan(
-    String value, {
+    String? value, {
     bool include = false,
     bool caseSensitive = true,
   }) {
@@ -246,8 +292,8 @@ extension PointGroupQueryFilter
   }
 
   QueryBuilder<PointGroup, PointGroup, QAfterFilterCondition> categoryBetween(
-    String lower,
-    String upper, {
+    String? lower,
+    String? upper, {
     bool includeLower = true,
     bool includeUpper = true,
     bool caseSensitive = true,
@@ -394,6 +440,16 @@ extension PointGroupQueryFilter
         includeLower: includeLower,
         upper: upper,
         includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterFilterCondition> lockedEqualTo(
+      bool value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'locked',
+        value: value,
       ));
     });
   }
@@ -582,6 +638,160 @@ extension PointGroupQueryFilter
       ));
     });
   }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterFilterCondition>
+      templateCodeIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'templateCode',
+      ));
+    });
+  }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterFilterCondition>
+      templateCodeIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'templateCode',
+      ));
+    });
+  }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterFilterCondition>
+      templateCodeEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'templateCode',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterFilterCondition>
+      templateCodeGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'templateCode',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterFilterCondition>
+      templateCodeLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'templateCode',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterFilterCondition>
+      templateCodeBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'templateCode',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterFilterCondition>
+      templateCodeStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'templateCode',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterFilterCondition>
+      templateCodeEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'templateCode',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterFilterCondition>
+      templateCodeContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'templateCode',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterFilterCondition>
+      templateCodeMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'templateCode',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterFilterCondition>
+      templateCodeIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'templateCode',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterFilterCondition>
+      templateCodeIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'templateCode',
+        value: '',
+      ));
+    });
+  }
 }
 
 extension PointGroupQueryObject
@@ -616,6 +826,18 @@ extension PointGroupQuerySortBy
     });
   }
 
+  QueryBuilder<PointGroup, PointGroup, QAfterSortBy> sortByLocked() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'locked', Sort.asc);
+    });
+  }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterSortBy> sortByLockedDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'locked', Sort.desc);
+    });
+  }
+
   QueryBuilder<PointGroup, PointGroup, QAfterSortBy> sortByName() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'name', Sort.asc);
@@ -637,6 +859,18 @@ extension PointGroupQuerySortBy
   QueryBuilder<PointGroup, PointGroup, QAfterSortBy> sortByPropertyIdDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'propertyId', Sort.desc);
+    });
+  }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterSortBy> sortByTemplateCode() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'templateCode', Sort.asc);
+    });
+  }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterSortBy> sortByTemplateCodeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'templateCode', Sort.desc);
     });
   }
 }
@@ -679,6 +913,18 @@ extension PointGroupQuerySortThenBy
     });
   }
 
+  QueryBuilder<PointGroup, PointGroup, QAfterSortBy> thenByLocked() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'locked', Sort.asc);
+    });
+  }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterSortBy> thenByLockedDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'locked', Sort.desc);
+    });
+  }
+
   QueryBuilder<PointGroup, PointGroup, QAfterSortBy> thenByName() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'name', Sort.asc);
@@ -702,6 +948,18 @@ extension PointGroupQuerySortThenBy
       return query.addSortBy(r'propertyId', Sort.desc);
     });
   }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterSortBy> thenByTemplateCode() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'templateCode', Sort.asc);
+    });
+  }
+
+  QueryBuilder<PointGroup, PointGroup, QAfterSortBy> thenByTemplateCodeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'templateCode', Sort.desc);
+    });
+  }
 }
 
 extension PointGroupQueryWhereDistinct
@@ -719,6 +977,12 @@ extension PointGroupQueryWhereDistinct
     });
   }
 
+  QueryBuilder<PointGroup, PointGroup, QDistinct> distinctByLocked() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'locked');
+    });
+  }
+
   QueryBuilder<PointGroup, PointGroup, QDistinct> distinctByName(
       {bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
@@ -731,6 +995,13 @@ extension PointGroupQueryWhereDistinct
       return query.addDistinctBy(r'propertyId');
     });
   }
+
+  QueryBuilder<PointGroup, PointGroup, QDistinct> distinctByTemplateCode(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'templateCode', caseSensitive: caseSensitive);
+    });
+  }
 }
 
 extension PointGroupQueryProperty
@@ -741,7 +1012,7 @@ extension PointGroupQueryProperty
     });
   }
 
-  QueryBuilder<PointGroup, String, QQueryOperations> categoryProperty() {
+  QueryBuilder<PointGroup, String?, QQueryOperations> categoryProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'category');
     });
@@ -750,6 +1021,12 @@ extension PointGroupQueryProperty
   QueryBuilder<PointGroup, bool, QQueryOperations> defaultFlagProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'defaultFlag');
+    });
+  }
+
+  QueryBuilder<PointGroup, bool, QQueryOperations> lockedProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'locked');
     });
   }
 
@@ -762,6 +1039,12 @@ extension PointGroupQueryProperty
   QueryBuilder<PointGroup, int, QQueryOperations> propertyIdProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'propertyId');
+    });
+  }
+
+  QueryBuilder<PointGroup, String?, QQueryOperations> templateCodeProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'templateCode');
     });
   }
 }

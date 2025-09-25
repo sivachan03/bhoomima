@@ -229,28 +229,18 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
       await showModalBottomSheet<bool>(
         context: context,
         isScrollControlled: true,
-        builder: (_) => AddPointGpsSheet(
-          onSave: (r) async {
-            // TODO: Save via PointRepo using active property and optional groupId
-          },
-        ),
+        builder: (_) => const AddPointGpsSheet(),
       );
     } else if (method == 'tap') {
       if (!mounted) return;
-      // Show an overlay on top of the map asking for a tap
-      showDialog(
-        context: context,
-        barrierColor: Colors.transparent,
-        builder: (_) => Stack(
-          children: [
-            const MapViewScreen(),
-            TapToPlaceOverlay(
-              onTapPlaced: (pos) async {
-                // TODO: Convert canvas pos -> lat/lon using current ProjectionService
-                // and save via PointRepo
-              },
-            ),
-          ],
+      // Transparent page route overlaying current map
+      Navigator.of(context).push(
+        PageRouteBuilder(
+          opaque: false,
+          pageBuilder: (_, __, ___) => const Scaffold(
+            backgroundColor: Colors.transparent,
+            body: Stack(children: [TapToPlaceOverlay()]),
+          ),
         ),
       );
     }

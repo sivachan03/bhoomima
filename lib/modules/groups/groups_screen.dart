@@ -33,9 +33,10 @@ class GroupsScreen extends ConsumerWidget {
           itemCount: list.length,
           itemBuilder: (_, i) {
             final g = list[i];
+            final catKey = g.category ?? '';
             final subtitle =
-                '${_kGroupCats[g.category] ?? g.category}'
-                '${g.defaultFlag ? ' • locked' : ''}';
+                '${_kGroupCats[catKey] ?? catKey}'
+                '${g.locked ? ' • locked' : ''}';
             return ListTile(
               title: Text(g.name),
               subtitle: Text(subtitle),
@@ -46,10 +47,14 @@ class GroupsScreen extends ConsumerWidget {
               trailing: PopupMenuButton<String>(
                 onSelected: (v) => _handle(context, ref, v, g),
                 itemBuilder: (_) => [
-                  const PopupMenuItem(value: 'edit', child: Text('Edit')),
+                  PopupMenuItem(
+                    value: 'edit',
+                    enabled: !g.locked,
+                    child: const Text('Edit'),
+                  ),
                   PopupMenuItem(
                     value: 'delete',
-                    enabled: !g.defaultFlag,
+                    enabled: !g.locked,
                     child: const Text('Delete'),
                   ),
                 ],
@@ -148,11 +153,11 @@ class GroupsScreen extends ConsumerWidget {
                           ),
                         )
                         .toList(),
-                    onChanged: existing?.defaultFlag == true
+                    onChanged: existing?.locked == true
                         ? null
                         : (v) => setState(() => category = v ?? 'user'),
                   ),
-                  if (existing?.defaultFlag == true)
+                  if (existing?.locked == true)
                     const Padding(
                       padding: EdgeInsets.only(top: 8.0),
                       child: Text(
@@ -168,7 +173,7 @@ class GroupsScreen extends ConsumerWidget {
                   child: const Text('Cancel'),
                 ),
                 FilledButton(
-                  onPressed: existing?.defaultFlag == true
+                  onPressed: existing?.locked == true
                       ? null
                       : () async {
                           final isar = await IsarService.open();
@@ -181,7 +186,8 @@ class GroupsScreen extends ConsumerWidget {
                                 ..propertyId = propertyId
                                 ..name = name
                                 ..category = category
-                                ..defaultFlag = false;
+                                ..defaultFlag = false
+                                ..locked = false;
                               await isar.pointGroups.put(g);
                             } else {
                               existing
