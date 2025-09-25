@@ -10,4 +10,7 @@ class PointGroup {
   bool locked = false; // true for system/template-created groups
   String? templateCode; // link back to GroupTemplate.code
   bool defaultFlag = false; // legacy flag kept for backward compatibility
+  String? iconCode; // resolves via IconItem.code
+  String? colorHex; // reserved for BM-142
+  int sortOrder = 0; // user-defined ordering
 }

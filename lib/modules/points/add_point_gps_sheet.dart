@@ -8,6 +8,8 @@ import '../shared/group_picker_sheet.dart';
 import 'point_save.dart';
 import 'point_naming.dart';
 import '../../core/db/isar_service.dart';
+import '../../core/ui/icon_resolver.dart';
+import '../shared/icon_picker_sheet.dart';
 
 class AddPointGpsSheet extends ConsumerStatefulWidget {
   const AddPointGpsSheet({super.key});
@@ -26,6 +28,7 @@ class _AddPointGpsSheetState extends ConsumerState<AddPointGpsSheet> {
   final _nameFocus = FocusNode();
   PickedGroup? _group;
   bool _saving = false;
+  String? _pointIconCode;
 
   @override
   void initState() {
@@ -185,6 +188,40 @@ class _AddPointGpsSheetState extends ConsumerState<AddPointGpsSheet> {
                 ),
               ],
             ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                FutureBuilder(
+                  future: IsarService.open().then(
+                    (db) =>
+                        IconResolver(db).buildIcon(_pointIconCode, size: 24),
+                  ),
+                  builder: (_, snap) => Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: snap.data ?? const SizedBox(),
+                    ),
+                  ),
+                ),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.brush),
+                  label: Text(_pointIconCode ?? 'Point icon (optional)'),
+                  onPressed: () async {
+                    final code = await openIconPickerSheet(
+                      context,
+                      ref,
+                      initial: _pointIconCode,
+                    );
+                    if (code == null) return;
+                    setState(() {
+                      _pointIconCode = code;
+                    });
+                  },
+                ),
+              ],
+            ),
             const SizedBox(height: 12),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
@@ -207,6 +244,7 @@ class _AddPointGpsSheetState extends ConsumerState<AddPointGpsSheet> {
                             lat: _bestLat!,
                             lon: _bestLon!,
                             source: 'gps',
+                            iconCode: _pointIconCode,
                           );
                           if (context.mounted) Navigator.pop(context, true);
                         }

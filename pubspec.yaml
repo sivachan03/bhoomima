@@ -27,6 +27,7 @@ dependencies:
   archive: ^3.6.1
   url_launcher: ^6.3.0
   vector_math: ^2.1.4
+  flutter_svg: ^2.0.10
 
 dev_dependencies:
   flutter_test:
@@ -41,3 +42,5 @@ flutter:
   assets:
     - assets/seed_vocab.json
     - assets/i18n/BM-55_parameters_seed.csv
+    - assets/icons/
+    - assets/seeds/BM-142_icons_catalog_seed.csv

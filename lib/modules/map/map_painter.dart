@@ -40,7 +40,7 @@ class MapPainter extends CustomPainter {
     final partitionPaint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.2 / scale
-      ..color = Colors.green.withOpacity(0.8);
+      ..color = Colors.green.withValues(alpha: 0.8);
 
     for (final g in borderGroups) {
       final ptsAsync = ref.read(pointsByGroupProvider(g.id));
@@ -92,7 +92,7 @@ class MapPainter extends CustomPainter {
         gps!.position.longitude,
       );
       final acc = gps!.acc;
-      final accPaint = Paint()..color = Colors.blue.withOpacity(0.15);
+      final accPaint = Paint()..color = Colors.blue.withValues(alpha: 0.15);
       final dot = Paint()..color = Colors.blue;
       canvas.drawCircle(xy, acc, accPaint);
       canvas.drawCircle(xy, 3.0 / scale, dot);

@@ -23,6 +23,7 @@ Future<PickedGroup?> openGroupPickerSheet(
       .propertyIdEqualTo(prop.id)
       .sortByName()
       .findAll();
+  if (!context.mounted) return null;
   return showModalBottomSheet<PickedGroup?>(
     context: context,
     builder: (_) => SafeArea(

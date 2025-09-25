@@ -6,12 +6,13 @@ import '../../app_state/active_property.dart';
 import '../../core/models/property.dart';
 import '../../core/db/isar_service.dart';
 import '../../core/seed/seed_catalog.dart';
+import '../../core/seed/seed_icons.dart';
 
 Future<void> openPropertyPicker(BuildContext context, WidgetRef ref) async {
   final repo = ref.read(propertyRepoProvider);
   final list = await repo.watchAll().first;
 
-  Future<void> _createInline() async {
+  Future<void> createInline() async {
     String name = '';
     String city = '';
     String pin = '';
@@ -69,14 +70,16 @@ Future<void> openPropertyPicker(BuildContext context, WidgetRef ref) async {
     await isar.writeTxn(() async {
       await isar.propertys.put(p);
     });
-    // Seed default groups immediately (idempotent safe)
+    // Seed default groups immediately (idempotent safe) and set default icons
     await SeedCatalog.ensureDefaultGroupsForProperty(isar, p);
+    await SeedIcons.ensureDefaultGroupIcons(isar, p.id);
     // Set active + legacy current id
     await ref.read(activePropertyProvider.notifier).setActive(p);
     await ref.read(currentPropertyIdProvider.notifier).set(p.id);
     if (context.mounted) Navigator.pop(context); // Close the sheet
   }
 
+  if (!context.mounted) return; // Avoid using context across async gaps
   final sel = await showModalBottomSheet<int?>(
     context: context,
     isScrollControlled: true,
@@ -103,7 +106,9 @@ Future<void> openPropertyPicker(BuildContext context, WidgetRef ref) async {
             ListTile(
               leading: const Icon(Icons.add),
               title: const Text('New property'),
-              onTap: _createInline,
+              onTap: () async {
+                await createInline();
+              },
             ),
           ],
         ),

@@ -32,33 +32,38 @@ const PointSchema = CollectionSchema(
       name: r'hAcc',
       type: IsarType.double,
     ),
-    r'lat': PropertySchema(
+    r'iconCode': PropertySchema(
       id: 3,
+      name: r'iconCode',
+      type: IsarType.string,
+    ),
+    r'lat': PropertySchema(
+      id: 4,
       name: r'lat',
       type: IsarType.double,
     ),
     r'lon': PropertySchema(
-      id: 4,
+      id: 5,
       name: r'lon',
       type: IsarType.double,
     ),
     r'name': PropertySchema(
-      id: 5,
+      id: 6,
       name: r'name',
       type: IsarType.string,
     ),
     r'stability': PropertySchema(
-      id: 6,
+      id: 7,
       name: r'stability',
       type: IsarType.double,
     ),
     r'x': PropertySchema(
-      id: 7,
+      id: 8,
       name: r'x',
       type: IsarType.double,
     ),
     r'y': PropertySchema(
-      id: 8,
+      id: 9,
       name: r'y',
       type: IsarType.double,
     )
@@ -83,6 +88,12 @@ int _pointEstimateSize(
   Map<Type, List<int>> allOffsets,
 ) {
   var bytesCount = offsets.last;
+  {
+    final value = object.iconCode;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.name.length * 3;
   return bytesCount;
 }
@@ -96,12 +107,13 @@ void _pointSerialize(
   writer.writeDateTime(offsets[0], object.createdAt);
   writer.writeLong(offsets[1], object.groupId);
   writer.writeDouble(offsets[2], object.hAcc);
-  writer.writeDouble(offsets[3], object.lat);
-  writer.writeDouble(offsets[4], object.lon);
-  writer.writeString(offsets[5], object.name);
-  writer.writeDouble(offsets[6], object.stability);
-  writer.writeDouble(offsets[7], object.x);
-  writer.writeDouble(offsets[8], object.y);
+  writer.writeString(offsets[3], object.iconCode);
+  writer.writeDouble(offsets[4], object.lat);
+  writer.writeDouble(offsets[5], object.lon);
+  writer.writeString(offsets[6], object.name);
+  writer.writeDouble(offsets[7], object.stability);
+  writer.writeDouble(offsets[8], object.x);
+  writer.writeDouble(offsets[9], object.y);
 }
 
 Point _pointDeserialize(
@@ -114,13 +126,14 @@ Point _pointDeserialize(
   object.createdAt = reader.readDateTimeOrNull(offsets[0]);
   object.groupId = reader.readLong(offsets[1]);
   object.hAcc = reader.readDoubleOrNull(offsets[2]);
+  object.iconCode = reader.readStringOrNull(offsets[3]);
   object.id = id;
-  object.lat = reader.readDouble(offsets[3]);
-  object.lon = reader.readDouble(offsets[4]);
-  object.name = reader.readString(offsets[5]);
-  object.stability = reader.readDoubleOrNull(offsets[6]);
-  object.x = reader.readDoubleOrNull(offsets[7]);
-  object.y = reader.readDoubleOrNull(offsets[8]);
+  object.lat = reader.readDouble(offsets[4]);
+  object.lon = reader.readDouble(offsets[5]);
+  object.name = reader.readString(offsets[6]);
+  object.stability = reader.readDoubleOrNull(offsets[7]);
+  object.x = reader.readDoubleOrNull(offsets[8]);
+  object.y = reader.readDoubleOrNull(offsets[9]);
   return object;
 }
 
@@ -138,16 +151,18 @@ P _pointDeserializeProp<P>(
     case 2:
       return (reader.readDoubleOrNull(offset)) as P;
     case 3:
-      return (reader.readDouble(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 4:
       return (reader.readDouble(offset)) as P;
     case 5:
-      return (reader.readString(offset)) as P;
+      return (reader.readDouble(offset)) as P;
     case 6:
-      return (reader.readDoubleOrNull(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 7:
       return (reader.readDoubleOrNull(offset)) as P;
     case 8:
+      return (reader.readDoubleOrNull(offset)) as P;
+    case 9:
       return (reader.readDoubleOrNull(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -437,6 +452,152 @@ extension PointQueryFilter on QueryBuilder<Point, Point, QFilterCondition> {
         upper: upper,
         includeUpper: includeUpper,
         epsilon: epsilon,
+      ));
+    });
+  }
+
+  QueryBuilder<Point, Point, QAfterFilterCondition> iconCodeIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'iconCode',
+      ));
+    });
+  }
+
+  QueryBuilder<Point, Point, QAfterFilterCondition> iconCodeIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'iconCode',
+      ));
+    });
+  }
+
+  QueryBuilder<Point, Point, QAfterFilterCondition> iconCodeEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'iconCode',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<Point, Point, QAfterFilterCondition> iconCodeGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'iconCode',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<Point, Point, QAfterFilterCondition> iconCodeLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'iconCode',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<Point, Point, QAfterFilterCondition> iconCodeBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'iconCode',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<Point, Point, QAfterFilterCondition> iconCodeStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'iconCode',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<Point, Point, QAfterFilterCondition> iconCodeEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'iconCode',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<Point, Point, QAfterFilterCondition> iconCodeContains(
+      String value,
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'iconCode',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<Point, Point, QAfterFilterCondition> iconCodeMatches(
+      String pattern,
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'iconCode',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<Point, Point, QAfterFilterCondition> iconCodeIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'iconCode',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<Point, Point, QAfterFilterCondition> iconCodeIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'iconCode',
+        value: '',
       ));
     });
   }
@@ -1021,6 +1182,18 @@ extension PointQuerySortBy on QueryBuilder<Point, Point, QSortBy> {
     });
   }
 
+  QueryBuilder<Point, Point, QAfterSortBy> sortByIconCode() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'iconCode', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Point, Point, QAfterSortBy> sortByIconCodeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'iconCode', Sort.desc);
+    });
+  }
+
   QueryBuilder<Point, Point, QAfterSortBy> sortByLat() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'lat', Sort.asc);
@@ -1131,6 +1304,18 @@ extension PointQuerySortThenBy on QueryBuilder<Point, Point, QSortThenBy> {
     });
   }
 
+  QueryBuilder<Point, Point, QAfterSortBy> thenByIconCode() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'iconCode', Sort.asc);
+    });
+  }
+
+  QueryBuilder<Point, Point, QAfterSortBy> thenByIconCodeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'iconCode', Sort.desc);
+    });
+  }
+
   QueryBuilder<Point, Point, QAfterSortBy> thenById() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'id', Sort.asc);
@@ -1235,6 +1420,13 @@ extension PointQueryWhereDistinct on QueryBuilder<Point, Point, QDistinct> {
     });
   }
 
+  QueryBuilder<Point, Point, QDistinct> distinctByIconCode(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'iconCode', caseSensitive: caseSensitive);
+    });
+  }
+
   QueryBuilder<Point, Point, QDistinct> distinctByLat() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'lat');
@@ -1295,6 +1487,12 @@ extension PointQueryProperty on QueryBuilder<Point, Point, QQueryProperty> {
   QueryBuilder<Point, double?, QQueryOperations> hAccProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'hAcc');
+    });
+  }
+
+  QueryBuilder<Point, String?, QQueryOperations> iconCodeProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'iconCode');
     });
   }
 

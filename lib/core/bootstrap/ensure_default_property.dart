@@ -4,11 +4,15 @@ import '../db/isar_service.dart';
 import '../models/property.dart';
 import '../state/current_property.dart';
 import '../seed/seed_catalog.dart';
+import '../seed/seed_icons.dart';
+import '../seed/seed_partition_colors.dart';
 
 Future<void> ensureDefaultProperty(WidgetRef ref) async {
   final isar = await IsarService.open();
   // Seed global catalog/templates (idempotent)
   await SeedCatalog.run(isar);
+  // Seed global icons (idempotent)
+  await SeedIcons.run(isar);
 
   final count = await isar.propertys.count();
 
@@ -22,6 +26,8 @@ Future<void> ensureDefaultProperty(WidgetRef ref) async {
     });
     // Ensure default template-driven groups
     await SeedCatalog.ensureDefaultGroupsForProperty(isar, prop);
+    await SeedIcons.ensureDefaultGroupIcons(isar, prop.id);
+    await SeedPartitionColors.apply(isar, prop.id);
     await ref.read(currentPropertyIdProvider.notifier).set(id);
     return;
   }
@@ -33,6 +39,8 @@ Future<void> ensureDefaultProperty(WidgetRef ref) async {
       await ref.read(currentPropertyIdProvider.notifier).set(first.id);
       // Backfill default groups for existing first property (legacy install)
       await SeedCatalog.ensureDefaultGroupsForProperty(isar, first);
+      await SeedIcons.ensureDefaultGroupIcons(isar, first.id);
+      await SeedPartitionColors.apply(isar, first.id);
     }
   }
 
@@ -40,5 +48,7 @@ Future<void> ensureDefaultProperty(WidgetRef ref) async {
   final props = await isar.propertys.where().findAll();
   for (final p in props) {
     await SeedCatalog.ensureDefaultGroupsForProperty(isar, p);
+    await SeedIcons.ensureDefaultGroupIcons(isar, p.id);
+    await SeedPartitionColors.apply(isar, p.id);
   }
 }

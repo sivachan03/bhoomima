@@ -13,6 +13,7 @@ Future<void> savePointAndToast({
   required double lat,
   required double lon,
   String source = 'gps',
+  String? iconCode,
 }) async {
   final isar = await IsarService.open();
   final p = Point()
@@ -20,7 +21,8 @@ Future<void> savePointAndToast({
     ..name = name
     ..lat = lat
     ..lon = lon
-    ..createdAt = DateTime.now();
+    ..createdAt = DateTime.now()
+    ..iconCode = iconCode;
   try {
     await isar.writeTxn(() async {
       await isar.points.put(p);

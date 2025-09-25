@@ -6,6 +6,8 @@ import '../../core/services/gps_service.dart';
 import '../../core/services/compass_service.dart';
 import '../../core/services/projection_service.dart';
 import 'map_painter.dart';
+import 'partition_overlay.dart';
+import '../filter/global_filter.dart';
 
 class MapViewScreen extends ConsumerStatefulWidget {
   const MapViewScreen({super.key});
@@ -77,6 +79,17 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
               child: const SizedBox.expand(),
             ),
           ),
+          // Always-on partitions overlay (pastel fill + outline)
+          if (prop != null)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: PartitionOverlay(
+                  propertyId: prop.id,
+                  project: (lat, lon) => proj.project(lat, lon),
+                  worldBounds: Rect.largest,
+                ),
+              ),
+            ),
           Positioned(
             right: 12,
             top: 12,
@@ -95,6 +108,27 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen> {
               top: 12,
               child: Chip(label: Text('Property ${prop.name}')),
             ),
+          // Legend toggle button (dev placement; move to your filters later)
+          Positioned(
+            right: 12,
+            top: 56,
+            child: Consumer(
+              builder: (_, ref, __) => IconButton.filledTonal(
+                icon: Icon(
+                  ref.watch(globalFilterProvider).legendVisible
+                      ? Icons.legend_toggle
+                      : Icons.legend_toggle_outlined,
+                ),
+                onPressed: () {
+                  final s = ref.read(globalFilterProvider);
+                  ref.read(globalFilterProvider.notifier).state = s.copyWith(
+                    legendVisible: !s.legendVisible,
+                  );
+                },
+                tooltip: 'Toggle legend',
+              ),
+            ),
+          ),
         ],
       ),
     );

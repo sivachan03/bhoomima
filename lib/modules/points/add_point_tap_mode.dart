@@ -7,6 +7,8 @@ import '../shared/group_picker_sheet.dart';
 import 'point_save.dart';
 import 'point_naming.dart';
 import '../../core/db/isar_service.dart';
+import '../../core/ui/icon_resolver.dart';
+import '../shared/icon_picker_sheet.dart';
 
 class TapToPlaceOverlay extends ConsumerWidget {
   const TapToPlaceOverlay({super.key});
@@ -34,6 +36,8 @@ class TapToPlaceOverlay extends ConsumerWidget {
           if (prop == null) return;
           final nameCtrl = TextEditingController();
           PickedGroup? pickedGroup;
+          String? pointIconCode;
+          if (!context.mounted) return;
           final ok =
               await showDialog<bool>(
                 context: context,
@@ -82,6 +86,44 @@ class TapToPlaceOverlay extends ConsumerWidget {
                             },
                           ),
                         ),
+                        const SizedBox(height: 8),
+                        StatefulBuilder(
+                          builder: (context, setStateSb) => Row(
+                            children: [
+                              FutureBuilder(
+                                future: IsarService.open().then(
+                                  (db) => IconResolver(
+                                    db,
+                                  ).buildIcon(pointIconCode, size: 24),
+                                ),
+                                builder: (_, snap) => Padding(
+                                  padding: const EdgeInsets.only(right: 8),
+                                  child: SizedBox(
+                                    width: 24,
+                                    height: 24,
+                                    child: snap.data ?? const SizedBox(),
+                                  ),
+                                ),
+                              ),
+                              OutlinedButton.icon(
+                                icon: const Icon(Icons.brush),
+                                label: Text(
+                                  pointIconCode ?? 'Point icon (optional)',
+                                ),
+                                onPressed: () async {
+                                  final code = await openIconPickerSheet(
+                                    context,
+                                    ref,
+                                    initial: pointIconCode,
+                                  );
+                                  if (code == null) return;
+                                  pointIconCode = code;
+                                  setStateSb(() {});
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
                       ],
                     ),
                     actions: [
@@ -109,6 +151,7 @@ class TapToPlaceOverlay extends ConsumerWidget {
             }
             return;
           }
+          if (!context.mounted) return;
           await savePointAndToast(
             context: context,
             ref: ref,
@@ -118,6 +161,7 @@ class TapToPlaceOverlay extends ConsumerWidget {
             lat: sample.position.latitude,
             lon: sample.position.longitude,
             source: 'tap+gps',
+            iconCode: pointIconCode,
           );
           if (context.mounted) Navigator.pop(context);
         },
@@ -128,7 +172,7 @@ class TapToPlaceOverlay extends ConsumerWidget {
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.6),
+              color: Colors.black.withValues(alpha: 0.6),
               borderRadius: BorderRadius.circular(16),
             ),
             child: const Text(

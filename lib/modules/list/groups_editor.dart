@@ -60,7 +60,7 @@ class GroupsEditor extends ConsumerWidget {
       ..defaultFlag = false;
 
     final nameCtl = TextEditingController(text: g.name);
-    String cat = g.category;
+    String? cat = g.category;
 
     await showDialog(
       context: context,

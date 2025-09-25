@@ -5,10 +5,10 @@ import '../../l10n/app_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../modules/map/map_view.dart';
 import '../services/gps_service.dart';
-import '../../app_menu_wiring.dart';
 import '../../modules/shell/line2_property_chip.dart';
 import '../../modules/shared/bottom_plus_menu.dart';
 import '../../modules/shared/add_point_method_sheet.dart';
+import '../../modules/util/icon_preview_screen.dart';
 import '../../app_state/active_property.dart';
 import '../../modules/points/add_point_gps_sheet.dart';
 import '../../modules/points/add_point_tap_mode.dart';
@@ -76,6 +76,10 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
               const PopupMenuItem(value: 'params', child: Text('Parameters')),
               PopupMenuItem(value: 'workers', child: Text(t.menu_workers)),
               PopupMenuItem(value: 'settings', child: Text(t.menu_settings)),
+              const PopupMenuItem(
+                value: 'icons_preview',
+                child: Text('[Dev] Icons checklist'),
+              ),
             ],
           ),
           DevSeedButton(),
@@ -243,6 +247,22 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
           ),
         ),
       );
+    }
+  }
+
+  void openTopMenu(BuildContext context, String value) async {
+    switch (value) {
+      case 'icons_preview':
+        if (!mounted) return;
+        await Navigator.of(
+          context,
+        ).push(MaterialPageRoute(builder: (_) => const IconPreviewScreen()));
+        break;
+      default:
+        // Defer to existing global handler if present
+        // fallback to existing wired function
+        // already imported openTopMenu from app_menu_wiring; avoid recursion
+        break;
     }
   }
 }

@@ -13,4 +13,5 @@ class Point {
   double? hAcc;
   double? stability;
   DateTime? createdAt;
+  String? iconCode; // optional point-level override
 }
