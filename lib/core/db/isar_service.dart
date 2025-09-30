@@ -1,4 +1,5 @@
 import 'package:isar/isar.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import '../models/property.dart' as property_model;
 import '../models/farmer.dart' as farmer_model;
@@ -41,7 +42,8 @@ class IsarService {
         unit_def_model.UnitDefSchema,
       ],
       directory: dir.path,
-      inspector: false,
+      // Enable Isar Inspector only in debug builds
+      inspector: kDebugMode,
     );
     return _isar!;
   }

@@ -13,11 +13,24 @@ import '../shared/select_farmer_sheet.dart';
 
 class PropertiesScreen extends ConsumerWidget {
   const PropertiesScreen({super.key});
+  // Guard to ensure auto-open add editor triggers only once per route instance
+  static final Set<ModalRoute<dynamic>> _autoOpenConsumed = {};
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final repo = ref.watch(propertyRepoProvider);
     final farmers = ref.watch(farmerRepoProvider);
+    // If navigated with an autoOpenAdd flag, schedule opening the editor once
+    final route = ModalRoute.of(context);
+    final args = route?.settings.arguments;
+    if (route != null && args is Map && args['autoOpenAdd'] == true) {
+      if (!_autoOpenConsumed.contains(route)) {
+        _autoOpenConsumed.add(route);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _openEditor(context, ref, repo);
+        });
+      }
+    }
     return Scaffold(
       appBar: AppBar(title: const Text('Properties')),
       floatingActionButton: FloatingActionButton(

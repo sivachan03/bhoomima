@@ -14,6 +14,10 @@ import '../../modules/points/add_point_gps_sheet.dart';
 import '../../modules/points/add_point_tap_mode.dart';
 import '../../modules/log/add_log_screen.dart';
 import '../../modules/diary/add_diary_task_screen.dart';
+import '../../modules/shell/line1_actions.dart';
+import '../../modules/list/points_list_controller.dart';
+import '../../modules/filter/global_filter.dart';
+import '../../app_menu_wiring.dart' as menu;
 
 import 'dev_seed_button.dart';
 
@@ -57,21 +61,37 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
           ],
         ),
         actions: [
-          IconButton(
-            onPressed: () {},
-            icon: const Icon(Icons.filter_alt),
-            tooltip: t.global_filter,
-          ),
-          IconButton(
-            onPressed: () {},
-            icon: const Icon(Icons.search),
-            tooltip: t.global_search,
+          Consumer(
+            builder: (_, ref, __) {
+              final active = ref.watch(activePropertyProvider).asData?.value;
+              if (active == null) return const SizedBox.shrink();
+              return Line1Actions(propertyId: active.id);
+            },
           ),
           PopupMenuButton<String>(
             tooltip: t.menu_top,
-            onSelected: (v) => openTopMenu(context, v),
+            onSelected: (v) async {
+              if (v == 'icons_preview') {
+                if (!mounted) return;
+                await Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const IconPreviewScreen()),
+                );
+              } else {
+                // Delegate to centralized menu routing
+                menu.openTopMenu(context, v);
+              }
+            },
             itemBuilder: (ctx) => [
-              PopupMenuItem(value: 'props', child: Text(t.menu_properties)),
+              PopupMenuItem(
+                child: const Text('Properties'),
+                onTap: () async {
+                  // Cache navigator before the async gap to avoid using context after await
+                  final nav = Navigator.of(context);
+                  await Future.delayed(const Duration(milliseconds: 10));
+                  if (!mounted) return;
+                  nav.pushNamed('/properties');
+                },
+              ),
               PopupMenuItem(value: 'groups', child: Text(t.menu_groups)),
               const PopupMenuItem(value: 'params', child: Text('Parameters')),
               PopupMenuItem(value: 'workers', child: Text(t.menu_workers)),
@@ -150,7 +170,15 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
         controller: _tabs,
         children: [
           const MapViewScreen(),
-          const _PlaceholderView(label: 'List View (Points)'),
+          Consumer(
+            builder: (_, ref, __) {
+              final active = ref.watch(activePropertyProvider).asData?.value;
+              if (active == null) {
+                return const _PlaceholderView(label: 'Select a property');
+              }
+              return _PointsListTab(propertyId: active.id);
+            },
+          ),
           const _PlaceholderView(label: 'Diary'),
           const _PlaceholderView(label: 'Farm Log'),
         ],
@@ -250,21 +278,8 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
     }
   }
 
-  void openTopMenu(BuildContext context, String value) async {
-    switch (value) {
-      case 'icons_preview':
-        if (!mounted) return;
-        await Navigator.of(
-          context,
-        ).push(MaterialPageRoute(builder: (_) => const IconPreviewScreen()));
-        break;
-      default:
-        // Defer to existing global handler if present
-        // fallback to existing wired function
-        // already imported openTopMenu from app_menu_wiring; avoid recursion
-        break;
-    }
-  }
+  // Menu selection is now handled inline in PopupMenuButton.onSelected and
+  // delegated to the centralized router in app_menu_wiring.dart for non-dev items.
 }
 
 // Legacy _CurrentPropertyChip replaced by Line2PropertyChip
@@ -275,5 +290,47 @@ class _PlaceholderView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(child: Text(label));
+  }
+}
+
+class _PointsListTab extends ConsumerWidget {
+  const _PointsListTab({required this.propertyId});
+  final int propertyId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final async = ref.watch(pointsListProvider(propertyId));
+    final filter = ref.watch(globalFilterProvider);
+    return async.when(
+      data: (list) => Column(
+        children: [
+          if (filter.search.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Filter: "${filter.search}" (${list.length})'),
+              ),
+            ),
+          Expanded(
+            child: ListView.separated(
+              itemCount: list.length,
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (ctx, i) {
+                final p = list[i];
+                return ListTile(
+                  title: Text(p.name),
+                  subtitle: Text(
+                    '${p.lat.toStringAsFixed(6)}, ${p.lon.toStringAsFixed(6)}',
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (e, st) => Center(child: Text('Error: $e')),
+    );
   }
 }

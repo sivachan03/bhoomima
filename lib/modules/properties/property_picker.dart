@@ -3,81 +3,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/repos/property_repo.dart';
 import '../../core/state/current_property.dart';
 import '../../app_state/active_property.dart';
-import '../../core/models/property.dart';
-import '../../core/db/isar_service.dart';
-import '../../core/seed/seed_catalog.dart';
-import '../../core/seed/seed_icons.dart';
+// Removed inline create flow; creation is via Properties screen
 
 Future<void> openPropertyPicker(BuildContext context, WidgetRef ref) async {
   final repo = ref.read(propertyRepoProvider);
   final list = await repo.watchAll().first;
 
-  Future<void> createInline() async {
-    String name = '';
-    String city = '';
-    String pin = '';
-    final ok =
-        await showDialog<bool>(
-          context: context,
-          builder: (_) => AlertDialog(
-            title: const Text('New property'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  decoration: const InputDecoration(labelText: 'Name'),
-                  autofocus: true,
-                  onChanged: (v) => name = v,
-                ),
-                TextField(
-                  decoration: const InputDecoration(
-                    labelText: 'City (optional)',
-                  ),
-                  onChanged: (v) => city = v,
-                ),
-                TextField(
-                  decoration: const InputDecoration(
-                    labelText: 'PIN (optional)',
-                  ),
-                  keyboardType: TextInputType.number,
-                  onChanged: (v) => pin = v,
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('Cancel'),
-              ),
-              ElevatedButton(
-                onPressed: name.trim().isEmpty
-                    ? null
-                    : () => Navigator.pop(context, true),
-                child: const Text('Create'),
-              ),
-            ],
-          ),
-        ) ??
-        false;
-    if (!ok || name.trim().isEmpty) return;
-
-    final isar = await IsarService.open();
-    final p = Property()
-      ..name = name.trim()
-      ..city = city.trim().isEmpty ? null : city.trim()
-      ..pin = pin.trim().isEmpty ? null : pin.trim()
-      ..type = 'locationOnly';
-    await isar.writeTxn(() async {
-      await isar.propertys.put(p);
-    });
-    // Seed default groups immediately (idempotent safe) and set default icons
-    await SeedCatalog.ensureDefaultGroupsForProperty(isar, p);
-    await SeedIcons.ensureDefaultGroupIcons(isar, p.id);
-    // Set active + legacy current id
-    await ref.read(activePropertyProvider.notifier).setActive(p);
-    await ref.read(currentPropertyIdProvider.notifier).set(p.id);
-    if (context.mounted) Navigator.pop(context); // Close the sheet
-  }
+  // Inline create removed; creation is handled by Properties screen add flow
 
   if (!context.mounted) return; // Avoid using context across async gaps
   final sel = await showModalBottomSheet<int?>(
@@ -90,6 +22,25 @@ Future<void> openPropertyPicker(BuildContext context, WidgetRef ref) async {
           controller: controller,
           shrinkWrap: true,
           children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  icon: const Icon(Icons.add_business),
+                  label: const Text('Add property'),
+                  onPressed: () {
+                    final nav = Navigator.of(context);
+                    // Close the picker and open Properties with auto-open add editor
+                    nav.pop();
+                    nav.pushNamed(
+                      '/properties',
+                      arguments: {'autoOpenAdd': true},
+                    );
+                  },
+                ),
+              ),
+            ),
             for (final p in list)
               ListTile(
                 leading: const Icon(Icons.home_outlined),
@@ -102,14 +53,7 @@ Future<void> openPropertyPicker(BuildContext context, WidgetRef ref) async {
                 ),
                 onTap: () => Navigator.pop(context, p.id),
               ),
-            const Divider(height: 1),
-            ListTile(
-              leading: const Icon(Icons.add),
-              title: const Text('New property'),
-              onTap: () async {
-                await createInline();
-              },
-            ),
+            // Inline "New property" tile removed; use Add property button above
           ],
         ),
       ),
@@ -118,9 +62,9 @@ Future<void> openPropertyPicker(BuildContext context, WidgetRef ref) async {
 
   if (sel == null) return; // Either dismissed or created inline (sheet closed)
 
-  final p = await repo.getById(sel);
-  if (p != null) {
-    await ref.read(activePropertyProvider.notifier).setActive(p);
-    await ref.read(currentPropertyIdProvider.notifier).set(p.id);
+  final selected = await repo.getById(sel);
+  if (selected != null) {
+    await ref.read(activePropertyProvider.notifier).setActive(selected);
+    await ref.read(currentPropertyIdProvider.notifier).set(selected.id);
   }
 }

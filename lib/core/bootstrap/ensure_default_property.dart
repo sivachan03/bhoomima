@@ -6,6 +6,7 @@ import '../state/current_property.dart';
 import '../seed/seed_catalog.dart';
 import '../seed/seed_icons.dart';
 import '../seed/seed_partition_colors.dart';
+import 'dev_seed_points.dart';
 
 Future<void> ensureDefaultProperty(WidgetRef ref) async {
   final isar = await IsarService.open();
@@ -28,6 +29,8 @@ Future<void> ensureDefaultProperty(WidgetRef ref) async {
     await SeedCatalog.ensureDefaultGroupsForProperty(isar, prop);
     await SeedIcons.ensureDefaultGroupIcons(isar, prop.id);
     await SeedPartitionColors.apply(isar, prop.id);
+    // Dev-only: ensure a small demo polygon exists so overlays can be verified quickly
+    await seedDemoPartitionIfEmpty(isar, propertyId: prop.id);
     await ref.read(currentPropertyIdProvider.notifier).set(id);
     return;
   }
@@ -41,6 +44,8 @@ Future<void> ensureDefaultProperty(WidgetRef ref) async {
       await SeedCatalog.ensureDefaultGroupsForProperty(isar, first);
       await SeedIcons.ensureDefaultGroupIcons(isar, first.id);
       await SeedPartitionColors.apply(isar, first.id);
+      // Dev-only: seed demo points if none exist yet
+      await seedDemoPartitionIfEmpty(isar, propertyId: first.id);
     }
   }
 
@@ -50,5 +55,7 @@ Future<void> ensureDefaultProperty(WidgetRef ref) async {
     await SeedCatalog.ensureDefaultGroupsForProperty(isar, p);
     await SeedIcons.ensureDefaultGroupIcons(isar, p.id);
     await SeedPartitionColors.apply(isar, p.id);
+    // Dev-only: seed demo points if none exist yet
+    await seedDemoPartitionIfEmpty(isar, propertyId: p.id);
   }
 }

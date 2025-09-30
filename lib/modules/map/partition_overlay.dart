@@ -6,6 +6,7 @@ import '../../core/db/isar_service.dart';
 import '../../core/models/point.dart';
 import '../../core/models/point_group.dart';
 import '../filter/global_filter.dart';
+// removed property telemetry import
 
 class PartitionOverlay extends ConsumerWidget {
   final int propertyId;
@@ -25,59 +26,66 @@ class PartitionOverlay extends ConsumerWidget {
     final legendVisible = ref.watch(globalFilterProvider).legendVisible;
 
     return FutureBuilder<List<_PartitionShape>>(
-      future: IsarService.open().then((db) => _load(db, propertyId)),
+      future: IsarService.open().then(
+        (db) => _load(db, propertyId),
+      ),
       builder: (_, snap) {
         if (!snap.hasData) return const SizedBox.shrink();
         final shapes = snap.data!;
-        return Stack(
-          children: [
-            // Painter
-            RepaintBoundary(
-              child: CustomPaint(
-                painter: _PartitionPainter(shapes: shapes, project: project),
-                size: Size.infinite,
+        return ClipRect(
+          child: Stack(
+            children: [
+              // Painter
+              RepaintBoundary(
+                child: CustomPaint(
+                  painter: _PartitionPainter(shapes: shapes, project: project),
+                  child: const SizedBox.expand(),
+                ),
               ),
-            ),
-            // Labels (only when filter includes partitions)
-            if (labelsOn) ...[
-              for (final s in shapes)
-                Positioned(
-                  left: s.centroid.dx - 40,
-                  top: s.centroid.dy - 10,
-                  width: 80,
-                  height: 20,
-                  child: IgnorePointer(
-                    ignoring: true,
-                    child: Container(
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.35),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        s.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
+              // Labels (only when filter includes partitions)
+              if (labelsOn) ...[
+                for (final s in shapes)
+                  Positioned(
+                    left: s.centroid.dx - 40,
+                    top: s.centroid.dy - 10,
+                    width: 80,
+                    height: 20,
+                    child: IgnorePointer(
+                      ignoring: true,
+                      child: Container(
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.35),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          s.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
+              ],
+              // Legend (toggle)
+              if (legendVisible)
+                Positioned(right: 8, top: 8, child: _Legend(shapes: shapes)),
             ],
-            // Legend (toggle)
-            if (legendVisible)
-              Positioned(right: 8, top: 8, child: _Legend(shapes: shapes)),
-          ],
+          ),
         );
       },
     );
   }
 
-  Future<List<_PartitionShape>> _load(Isar db, int propertyId) async {
+  Future<List<_PartitionShape>> _load(
+    Isar db,
+    int propertyId,
+  ) async {
     final parts = await db.pointGroups
         .filter()
         .propertyIdEqualTo(propertyId)
@@ -96,18 +104,16 @@ class PartitionOverlay extends ConsumerWidget {
       if (pts.length < 3) continue; // need at least a triangle
 
       final path = Path();
-      Offset? first;
       for (var i = 0; i < pts.length; i++) {
         final p = pts[i];
         final xy = project(p.lat, p.lon);
         if (i == 0) {
           path.moveTo(xy.dx, xy.dy);
-          first = xy;
         } else {
           path.lineTo(xy.dx, xy.dy);
         }
       }
-      if (first != null) path.lineTo(first.dx, first.dy);
+      path.close();
 
       final centroid = _centroid(pts);
       out.add(
@@ -166,13 +172,14 @@ class _PartitionPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     for (final s in shapes) {
+      // Subtle pastel fill + light outline for production
       final fill = Paint()
         ..style = PaintingStyle.fill
         ..color = s.color;
       final stroke = Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2
-        ..color = s.color.withValues(alpha: 0.9);
+        ..strokeWidth = 1.5
+        ..color = Colors.black.withValues(alpha: 0.25);
       canvas.drawPath(s.path, fill);
       canvas.drawPath(s.path, stroke);
     }

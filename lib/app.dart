@@ -5,14 +5,22 @@ import 'core/vocab/vocab_repo.dart';
 import 'core/ui/shell_scaffold.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/bootstrap/ensure_default_property.dart';
+import 'modules/filter/filter_persistence.dart';
+import 'modules/properties/property_create_screen.dart';
+import 'modules/properties/properties_screen.dart';
 
 class BhoomiMaApp extends ConsumerWidget {
   const BhoomiMaApp({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Boot sequence: ensure default property + load persisted filters
+    final boot = Future<void>(() async {
+      await ensureDefaultProperty(ref);
+      await ref.read(filterPersistence).load();
+    });
     return FutureBuilder<void>(
-      future: ensureDefaultProperty(ref),
+      future: boot,
       builder: (ctx, snap) {
         if (snap.connectionState != ConnectionState.done) {
           return const MaterialApp(
@@ -23,6 +31,10 @@ class BhoomiMaApp extends ConsumerWidget {
         return MaterialApp(
           debugShowCheckedModeBanner: false,
           onGenerateTitle: (ctx) => AppLocalizations.of(ctx).appName,
+          routes: {
+            '/property/create': (ctx) => const PropertyCreateScreen(),
+            '/properties': (ctx) => const PropertiesScreen(),
+          },
           localizationsDelegates: const [
             AppLocalizations.delegate,
             GlobalMaterialLocalizations.delegate,
