@@ -24,11 +24,8 @@ class PartitionOverlay extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final labelsOn = ref.watch(globalFilterProvider).partitionsIncluded;
     final legendVisible = ref.watch(globalFilterProvider).legendVisible;
-
     return FutureBuilder<List<_PartitionShape>>(
-      future: IsarService.open().then(
-        (db) => _load(db, propertyId),
-      ),
+      future: IsarService.open().then((db) => _load(db, propertyId)),
       builder: (_, snap) {
         if (!snap.hasData) return const SizedBox.shrink();
         final shapes = snap.data!;
@@ -39,7 +36,7 @@ class PartitionOverlay extends ConsumerWidget {
               RepaintBoundary(
                 child: CustomPaint(
                   painter: _PartitionPainter(shapes: shapes, project: project),
-                  child: const SizedBox.expand(),
+                  size: Size.infinite,
                 ),
               ),
               // Labels (only when filter includes partitions)
@@ -82,10 +79,7 @@ class PartitionOverlay extends ConsumerWidget {
     );
   }
 
-  Future<List<_PartitionShape>> _load(
-    Isar db,
-    int propertyId,
-  ) async {
+  Future<List<_PartitionShape>> _load(Isar db, int propertyId) async {
     final parts = await db.pointGroups
         .filter()
         .propertyIdEqualTo(propertyId)
@@ -103,17 +97,27 @@ class PartitionOverlay extends ConsumerWidget {
 
       if (pts.length < 3) continue; // need at least a triangle
 
-      final path = Path();
+      // Build world-space path using provided projector; outer Transform will map to screen
+      final path = Path()..fillType = PathFillType.evenOdd;
+      Offset? first;
       for (var i = 0; i < pts.length; i++) {
         final p = pts[i];
         final xy = project(p.lat, p.lon);
+        // Guard against invalid projection values (silent)
+        if (xy.dx.isNaN ||
+            xy.dy.isNaN ||
+            xy.dx.isInfinite ||
+            xy.dy.isInfinite) {
+          continue;
+        }
         if (i == 0) {
           path.moveTo(xy.dx, xy.dy);
+          first = xy;
         } else {
           path.lineTo(xy.dx, xy.dy);
         }
       }
-      path.close();
+      if (first != null) path.close();
 
       final centroid = _centroid(pts);
       out.add(

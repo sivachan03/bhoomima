@@ -3,7 +3,7 @@ import '../../core/models/point.dart';
 import '../../core/models/point_group.dart';
 import 'map_providers.dart';
 
-/// Returns a Map<groupId, List<Point>> that is ready (no async in paint).
+/// Returns a map from groupId to a list of Points that is ready (no async in paint).
 final pointsByGroupsReadyProvider =
     Provider.family<Map<int, List<Point>>, List<PointGroup>>((ref, groups) {
       final out = <int, List<Point>>{};

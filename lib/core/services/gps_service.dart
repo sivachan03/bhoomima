@@ -75,6 +75,47 @@ class GpsService {
     _sub?.cancel();
   }
 
+  Future<GpsSample> getOnce() async {
+    final ok = await ensurePermission();
+    if (!ok) {
+      throw Exception('Location permission denied');
+    }
+    final s = await Geolocator.getCurrentPosition(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.best,
+        timeLimit: Duration(seconds: 8),
+      ),
+    );
+    return GpsSample(s, (s.accuracy).toDouble(), 0);
+  }
+
+  /// Best-effort one-shot: wait up to [maxWait] for a current fix; if it
+  /// times out, fall back to the last known position when available.
+  /// Returns (sample, usedFallback).
+  Future<(GpsSample, bool)> getOnceBestEffort({
+    Duration maxWait = const Duration(seconds: 25),
+  }) async {
+    final ok = await ensurePermission();
+    if (!ok) {
+      throw Exception('Location permission denied');
+    }
+    try {
+      final s = await Geolocator.getCurrentPosition(
+        locationSettings: LocationSettings(
+          accuracy: LocationAccuracy.best,
+          timeLimit: maxWait,
+        ),
+      );
+      return (GpsSample(s, (s.accuracy).toDouble(), 0), false);
+    } on TimeoutException {
+      final last = await Geolocator.getLastKnownPosition();
+      if (last != null) {
+        return (GpsSample(last, (last.accuracy).toDouble(), 0), true);
+      }
+      rethrow;
+    }
+  }
+
   double _haversine(double lat1, double lon1, double lat2, double lon2) {
     const R = 6371000.0;
     final dLat = _deg2rad(lat2 - lat1);

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:math' as math;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/services/gps_service.dart';
 import '../../core/services/projection_service.dart';
@@ -20,6 +21,9 @@ class MapPainter extends CustomPainter {
     required this.ref,
     required this.gps,
     this.showPointLabels = false,
+    this.splitRingAWorld,
+    this.splitRingBWorld,
+    this.matrix,
   });
   final ProjectionService projection;
   final Offset pan;
@@ -32,18 +36,60 @@ class MapPainter extends CustomPainter {
   final WidgetRef ref;
   final GpsSample? gps;
   final bool showPointLabels;
+  // Optional split preview rings (world coordinates)
+  final List<Offset>? splitRingAWorld;
+  final List<Offset>? splitRingBWorld;
+  // Optional precomposed view matrix (world->screen). If provided, painter will use it.
+  final Matrix4? matrix;
 
   // Debug helpers (one-time logging during a session)
   static bool _loggedCountsOnce = false;
   static bool _printedSamplePtsOnce = false;
+  static bool _warnedWrongCategoryOnce = false;
 
   @override
   void paint(Canvas canvas, Size size) {
+    canvas.save();
     final filter = ref.read(globalFilterProvider);
-    final center = size.center(Offset.zero);
-    canvas.translate(center.dx + pan.dx, center.dy + pan.dy);
-    canvas.rotate(rotation);
-    canvas.scale(scale);
+    double effectiveScale = scale;
+    double effectiveRotation = rotation;
+    if (matrix != null) {
+      // Apply provided matrix and derive effective scale/rotation for debug and strokes
+      final m = matrix!;
+      canvas.transform(m.storage);
+      // 2x2 submatrix columns [m00 m01; m10 m11]
+      final s = m.storage;
+      final m00 = s[0], m10 = s[1];
+      effectiveScale = math.sqrt(m00 * m00 + m10 * m10);
+      effectiveRotation = math.atan2(m10, m00);
+    } else {
+      final center = size.center(Offset.zero);
+      canvas.translate(center.dx + pan.dx, center.dy + pan.dy);
+      canvas.rotate(rotation);
+      canvas.scale(scale);
+    }
+
+    // DEBUG: show rotation axis so we can see rotation working
+    final axis = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5 / effectiveScale
+      ..color = const Color(0xFFE91E63);
+    canvas.drawLine(const Offset(-40, 0), const Offset(40, 0), axis);
+    canvas.drawLine(const Offset(0, -40), const Offset(0, 40), axis);
+
+    // Log the angle that painter received (temporary)
+    // Logs to correlate gesture vs paint
+    debugPrint(
+      '[BM-178 r4] PAINT ROT='
+      '${effectiveRotation.toStringAsFixed(3)} '
+      'scale=${effectiveScale.toStringAsFixed(2)} '
+      'pan=(${pan.dx.toStringAsFixed(1)},${pan.dy.toStringAsFixed(1)})',
+    );
+    debugPrint(
+      '[BM-190] PAINT rot=${effectiveRotation.toStringAsFixed(3)} '
+      'scale=${effectiveScale.toStringAsFixed(2)} '
+      'pan=(${pan.dx.toStringAsFixed(1)},${pan.dy.toStringAsFixed(1)})',
+    );
 
     // Quick verification logs (one-time): groups and total points
     if (!_loggedCountsOnce) {
@@ -68,17 +114,44 @@ class MapPainter extends CustomPainter {
       ).withValues(alpha: 0.30); // soft blue, 30% alpha
     final partitionEdge = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2 / scale
+      ..strokeWidth = 1.2 / effectiveScale
       ..color = const Color(0xFF1976D2); // blue edge
     final borderPaint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.4 / scale
+      ..strokeWidth = 2.4 / effectiveScale
       ..color = const Color(0xFF2E7D32); // deep green for property border
 
     // DEV quad removed after verification
 
+    // One-time origin print to confirm painter uses same projection origin
+    // as split logic
+    debugPrint(
+      '[BM-178 r4] PAINT origin lat0/lon0 = ${projection.lat0}, ${projection.lon0}',
+    );
+
     // 1) Partition fills + edges first
+    Path mkPathFromRing(List<Offset> ring) {
+      final p = Path()..fillType = PathFillType.evenOdd;
+      if (ring.isEmpty) return p;
+      p.moveTo(ring.first.dx, ring.first.dy);
+      for (final pt in ring.skip(1)) {
+        p.lineTo(pt.dx, pt.dy);
+      }
+      p.close();
+      return p;
+    }
+
     for (final g in partitionGroups) {
+      // Sanity: ensure category matches expected label
+      if (g.category != null && g.category != 'partition') {
+        if (!_warnedWrongCategoryOnce) {
+          debugPrint(
+            'MapPainter: partitionGroups contains non-partition category=${g.category} id=${g.id}',
+          );
+          _warnedWrongCategoryOnce = true;
+        }
+        continue;
+      }
       if (filter.groupIds.isNotEmpty && !filter.groupIds.contains(g.id)) {
         continue;
       }
@@ -97,15 +170,25 @@ class MapPainter extends CustomPainter {
         }
         _printedSamplePtsOnce = true;
       }
-      final first = projection.project(pts.first.lat, pts.first.lon);
-      final path = Path()..moveTo(first.dx, first.dy);
-      for (var i = 1; i < pts.length; i++) {
-        final xy = projection.project(pts[i].lat, pts[i].lon);
-        path.lineTo(xy.dx, xy.dy);
+      // Build fresh path in world space and ensure it's closed, with even-odd fill
+      final ring = <Offset>[
+        for (final p in pts) projection.project(p.lat, p.lon),
+      ];
+      final path = mkPathFromRing(ring);
+
+      // 2) Ignore absurd bounds (projection/origin mismatch / self-intersection)
+      final b = path.getBounds();
+      if (!b.isFinite || b.width > 1e7 || b.height > 1e7) {
+        debugPrint('SKIP partition: absurd bounds w=${b.width} h=${b.height}');
+        continue;
       }
-      path.close();
+
+      // 3) Soft-clip to a large world rect so nothing can flood the canvas
+      canvas.save();
+      canvas.clipRect(const Rect.fromLTWH(-100000, -100000, 200000, 200000));
       canvas.drawPath(path, partitionFill);
       canvas.drawPath(path, partitionEdge);
+      canvas.restore();
     }
 
     // 2) Farm border outline last so it sits on top
@@ -122,7 +205,66 @@ class MapPainter extends CustomPainter {
         path.lineTo(xy.dx, xy.dy);
       }
       path.close();
-      canvas.drawPath(path, borderPaint);
+      // Ensure non-empty bounds for border ring as well
+      final shifted = path.shift(Offset.zero);
+      canvas.drawPath(shifted, borderPaint);
+    }
+
+    // 3) If we have split preview rings, draw them as independent, closed paths
+    if (splitRingAWorld != null && splitRingBWorld != null) {
+      Path pathFromRing(List<Offset> ringWorld) {
+        // hygiene
+        List<Offset> dedupeClose(List<Offset> pts, [double eps = 1e-6]) {
+          final out = <Offset>[];
+          for (final p in pts) {
+            if (out.isEmpty || (out.last - p).distance > eps) out.add(p);
+          }
+          return out;
+        }
+
+        bool isCCW(List<Offset> pts) {
+          double a = 0;
+          for (int i = 0; i < pts.length; i++) {
+            final p = pts[i], q = pts[(i + 1) % pts.length];
+            a += (q.dx - p.dx) * (q.dy + p.dy);
+          }
+          return a < 0; // classic convention
+        }
+
+        final pts = dedupeClose(ringWorld);
+        final ccw = isCCW(pts);
+        final list = ccw ? List<Offset>.from(pts) : pts.reversed.toList();
+        if (list.isNotEmpty && list.first != list.last) list.add(list.first);
+
+        final path = Path()..fillType = PathFillType.evenOdd;
+        if (list.isNotEmpty) {
+          path.moveTo(list[0].dx, list[0].dy);
+          for (int i = 1; i < list.length; i++) {
+            path.lineTo(list[i].dx, list[i].dy);
+          }
+          path.close();
+        }
+        return path;
+      }
+
+      final pFill = Paint()
+        ..style = PaintingStyle.fill
+        ..color = const Color(0x552196F3);
+      final pStroke = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5 / scale
+        ..color = const Color(0xFF2196F3);
+
+      final path1 = pathFromRing(splitRingAWorld!);
+      final path2 = pathFromRing(splitRingBWorld!);
+      // Guard with a conservative clip to avoid accidental full-canvas floods
+      canvas.save();
+      canvas.clipRect(const Rect.fromLTWH(-100000, -100000, 200000, 200000));
+      canvas.drawPath(path1, pFill);
+      canvas.drawPath(path2, pFill);
+      canvas.drawPath(path1, pStroke);
+      canvas.drawPath(path2, pStroke);
+      canvas.restore();
     }
 
     if (gps != null) {
@@ -143,8 +285,8 @@ class MapPainter extends CustomPainter {
     // Approximate viewport bounds in world space (ignoring rotation)
     final viewportWorld = Rect.fromCenter(
       center: Offset.zero,
-      width: size.width / scale,
-      height: size.height / scale,
+      width: size.width / effectiveScale,
+      height: size.height / effectiveScale,
     );
     void drawGroupPoints(PointGroup g) {
       if (filter.groupIds.isNotEmpty && !filter.groupIds.contains(g.id)) {
@@ -186,6 +328,7 @@ class MapPainter extends CustomPainter {
     for (final g in partitionGroups) {
       drawGroupPoints(g);
     }
+    canvas.restore();
   }
 
   @override

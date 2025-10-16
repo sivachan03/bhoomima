@@ -28,6 +28,8 @@ dependencies:
   url_launcher: ^6.3.0
   vector_math: ^2.1.4
   flutter_svg: ^2.0.10
+  matrix_gesture_detector_pro: ^1.0.0
+
 
 dev_dependencies:
   flutter_test:

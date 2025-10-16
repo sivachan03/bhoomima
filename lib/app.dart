@@ -8,6 +8,7 @@ import 'core/bootstrap/ensure_default_property.dart';
 import 'modules/filter/filter_persistence.dart';
 import 'modules/properties/property_create_screen.dart';
 import 'modules/properties/properties_screen.dart';
+import 'modules/map/farm_map_view.dart';
 
 class BhoomiMaApp extends ConsumerWidget {
   const BhoomiMaApp({super.key});
@@ -34,6 +35,8 @@ class BhoomiMaApp extends ConsumerWidget {
           routes: {
             '/property/create': (ctx) => const PropertyCreateScreen(),
             '/properties': (ctx) => const PropertiesScreen(),
+            // Developer route to test MatrixGestureDetector-based sample view
+            '/dev/farm': (ctx) => const FarmMapView(),
           },
           localizationsDelegates: const [
             AppLocalizations.delegate,

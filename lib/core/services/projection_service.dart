@@ -19,4 +19,12 @@ class ProjectionService {
     final dy = earthRadius * (dLat * math.pi / 180.0);
     return Offset(dx, -dy);
   }
+
+  (double lat, double lon) unproject(Offset xy) {
+    final dy = -xy.dy;
+    final dx = xy.dx;
+    final dLat = (dy / earthRadius) * 180.0 / math.pi;
+    final dLon = (dx / (earthRadius * _k)) * 180.0 / math.pi;
+    return (lat0 + dLat, lon0 + dLon);
+  }
 }
