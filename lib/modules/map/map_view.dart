@@ -20,6 +20,8 @@ import '../../core/repos/partition_ops.dart';
 import '../../core/db/isar_service.dart';
 import 'bm_gestures.dart';
 import 'parallel_pan_veto.dart';
+import 'two_finger_sampler.dart';
+import 'two_point_partition.dart';
 
 // ========================= Tunables (BM-194/195) =========================
 // Central place for all gesture & logging tuning knobs. Screenshot/share this
@@ -274,6 +276,15 @@ class BM199Gate {
   double get rotAccum => _w.rotSum;
   double get zoomAccum => _w.zoomSum;
   double get nonPanAccum => _w.nonPanSum;
+
+  // BM-200B.9g: Advance time for decay without adding evidence.
+  // Keeps rot/zoom accumulators from growing while allowing window pruning.
+  void tickNoGrowth({required int nowMs, required double sepPx}) {
+    // Maintain previous separation so subsequent zoomEv calculations stay consistent
+    _prevSep = sepPx;
+    // Add a zero-evidence sample at nowMs to trigger window pruning/decay
+    _w.add(_BM199Sample(nowMs, 0.0, 0.0, 0.0));
+  }
 }
 // ===============================================================================
 // Tuning playbook (movement-first)
@@ -402,20 +413,56 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
   // BM-200B.8: Parallel veto via EMA velocities
   static const double _parVMinPxS = 20.0; // px/s
   static const double _parEmaAlpha = 0.30; // smoothing factor
+  static const double _parMinPxPerFrame = 1.5; // F1: validity gate (px)
   static const double _parCosTh = 0.995; // BM-200B.9d stricter
   static const double _parSepTh = 0.010; // BM-200B.9d tiny squeeze allowed
+  // BM-199 residual-based pan veto hysteresis
+  static const double _residVetoEnter = 0.12; // enter when residualFrac ≥ 0.12
+  static const double _residVetoExit = 0.08; // exit when residualFrac ≤ 0.08
   double _cosParAvg = 0.0;
   double _sepFracAvg = 0.0;
   Offset _p1PrevForPar = Offset.zero, _p2PrevForPar = Offset.zero;
   int _tPrevMs = -1;
   bool _currentParVeto = false;
+  // BM-200B.9h guard: suppress dθ/dScale and locks for a short window after parallel entry
+  static const int _par9eEntryGuardMs = 100; // ms
+  int _par9eEntryMs = -1; // last 9h rising-edge timestamp (nowMsAll)
+  bool _par9ePrevVeto = false; // previous-frame 9h veto to detect rising edge
+  bool _par9eGuardActive =
+      false; // per-frame guard state derived from _par9eEntryMs
+  bool _freezePrevActive = false; // for [FREEZE] end logging
+  // BM-200B.9h: pre-veto shield before latch (cos>=0.95, validN<6)
+  bool _par9eShieldActive = false;
+  // BM-200B.9h: per-frame ordering guard to ensure PAR compute precedes APPLY/GATE
+  bool _par9eDidComputeThisFrame = false;
   // BM-200B.9d diagnostic-only veto (centroid-relative EMA) — do not drive gating
   bool _parVeto9d = false;
-  // BM-200B.9e: simple per-frame, raw-delta parallel pan veto helper
+  // Single-source state from 9h per frame
+  ParallelPanVetoState? _par9eState;
+  // 9h last-published invariants to assert single-source consumption in GATE
+  int _par9eLastGid = -1;
+  int _par9eLastSeq = -1;
+  int _par9eLastVer = -1;
+  double _par9eLastCos = 0.0;
+  double _par9eLastSep = 0.0;
+  // Post office: defer concise APPLY print until after GATE per frame
+  bool _postApplyPending = false;
+  bool _postApplyPar = false;
+  double _postApplyDAngle = 0.0;
+  double _postApplyDScale = 0.0;
+  // BM-199 hysteresis latch for residual-based pan veto
+  bool _residualVetoLatched = false;
+  // BM-200B.9h: single per-frame, raw-delta parallel pan veto helper
   final ParallelPanVeto _par9e = ParallelPanVeto();
+  // BM-200B.9f: coalesced two-finger sampler to stabilize v1/v2
+  final TwoFingerSampler _sampler9f = TwoFingerSampler();
+  // BM-199B.1 P1: two-point partition plumbing (stable ids + kinematics)
+  final TwoPointPartition _tp = TwoPointPartition();
   // BM-200B.7: simple gate dwell tracking for logs (no behavior change)
   int _bm200bGateOnSinceMs = -1;
   bool? _bm200bGateRotate;
+  // BM-200B.9g: throttle summary logging while parallel veto holds
+  DateTime? _bm200b9gLastSum;
 
   // BM-200B.9a: strong-sample EMA-based parallel veto state (per-frame velocities)
   void _bm200b8UpdateParallelVeto({
@@ -423,7 +470,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
     required Offset p2,
     required int tNowMs,
   }) {
-    // BM-200B.9b latch: update only when both fingers have new deltas since last commit
+    // BM-200B.9h latch: update only when both fingers have new deltas since last commit
     if (_tPrevMs < 0) {
       // first commit init
       _tPrevMs = tNowMs;
@@ -437,10 +484,9 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
 
     final Offset d1 = p1 - _p1PrevForPar;
     final Offset d2 = p2 - _p2PrevForPar;
-    final bool bothMoved =
-        (d1.dx != 0.0 || d1.dy != 0.0) && (d2.dx != 0.0 || d2.dy != 0.0);
-    if (!bothMoved) {
-      // Hold: don't commit prev or time until both have moved
+    // F1 validity gate: require max displacement strong enough in this frame
+    if (math.max(d1.distance, d2.distance) < _parMinPxPerFrame) {
+      // Hold: skip this frame entirely; do not update averages or prev/time
       return;
     }
 
@@ -456,25 +502,20 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
     final bool strong =
         (mag1 >= _parVMinPxS && mag2 >= _parVMinPxS && denom > 1e-6);
 
-    // Proof line once per update frame for BM-200B.9d config
-    debugPrint('[BM-200B.9d PARCFG] relToCentroid=false');
+    // (9h) Single PAR config: do not print legacy 9d proof here
 
     double cosParRaw = 0.0;
     if (strong) {
       final double dot = v1.dx * v2.dx + v1.dy * v2.dy;
       cosParRaw = (dot / denom).clamp(-1.0, 1.0);
       _cosParAvg = _parEmaAlpha * cosParRaw + (1 - _parEmaAlpha) * _cosParAvg;
-      // sep fraction (strong only)
+      // sep fraction (strong only) — F5 sanity formula
       final double sepNow = (p2 - p1).distance;
       final double sepPrev = (_p2PrevForPar - _p1PrevForPar).distance;
-      if (sepPrev > 1e-3) {
-        final double sepFracRaw = ((sepNow - sepPrev).abs() / sepPrev).clamp(
-          0.0,
-          1.0,
-        );
-        _sepFracAvg =
-            _parEmaAlpha * sepFracRaw + (1 - _parEmaAlpha) * _sepFracAvg;
-      }
+      final double sepDen = math.max(math.max(sepNow, sepPrev), 1.0);
+      final double sepFracRaw = (sepNow - sepPrev).abs() / sepDen;
+      _sepFracAvg =
+          _parEmaAlpha * sepFracRaw + (1 - _parEmaAlpha) * _sepFracAvg;
     }
 
     // BM-200B.9d — Deadbands for parallel veto
@@ -488,13 +529,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
     // Keep 9d as diagnostic; do not overwrite the main veto from 9e
     _parVeto9d = parVeto;
 
-    debugPrint(
-      '[BM-200B.9b PAR] parVeto='
-      '${parVeto} strong=${strong} '
-      'mag1=${mag1.toStringAsFixed(1)} mag2=${mag2.toStringAsFixed(1)} '
-      'cosParRaw=${cosParRaw.toStringAsFixed(3)} cosParAvg=${_cosParAvg.toStringAsFixed(3)} '
-      'sepFracAvg=${_sepFracAvg.toStringAsFixed(3)}',
-    );
+    // (9h) Silence legacy 9b per-frame prints; keep values for optional summary only
 
     // Commit this sample only when both moved
     _p1PrevForPar = p1;
@@ -707,12 +742,25 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
             },
             onPointerMove: (e) {
               _activePointers[e.pointer] = e.localPosition;
+              // Feed the two-finger sampler with raw pointer moves for coalescing
+              if (_sampler9f.id1 != null && _sampler9f.id2 != null) {
+                _sampler9f.onPointerMove(e.pointer, e.localPosition);
+                // Defer compute to onScaleUpdate to keep a single source/order per frame
+              }
             },
             onPointerUp: (e) {
               _activePointers.remove(e.pointer);
+              if (_activePointers.length < 2) {
+                _sampler9f.endGesture();
+                _tp.end();
+              }
             },
             onPointerCancel: (e) {
               _activePointers.remove(e.pointer);
+              if (_activePointers.length < 2) {
+                _sampler9f.endGesture();
+                _tp.end();
+              }
             },
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
@@ -777,8 +825,50 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                 _tPrevMs = -1;
                 _currentParVeto = false;
                 _parVeto9d = false;
-                // Init BM-200B.9e helper
+                // Reset residual-based pan veto latch
+                _residualVetoLatched = false;
+                // Reset 9h entry guard state
+                _par9ePrevVeto = false;
+                _par9eEntryMs = -1;
+                _par9eGuardActive = false;
+                // Init BM-200B.9h helper
                 _par9e.beginGesture();
+                // PAR→APPLY handoff: log instance/override wiring once per gesture
+                debugPrint(
+                  '[BM-200B.9h HANDOFF] instance=${identityHashCode(_par9e)} '
+                          'override=' +
+                      ((_par9e.forceAlwaysTrue
+                                  ? true
+                                  : (_par9e.forceAlwaysFalse ? false : null))
+                              ?.toString() ??
+                          'NA'),
+                );
+                // Initialize 9f sampler and lock IDs immediately if two pointers are already down
+                if (_activePointers.length >= 2) {
+                  final ids = _activePointers.keys.toList()..sort();
+                  final p1s = _activePointers[ids[0]]!;
+                  final p2s = _activePointers[ids[1]]!;
+                  final nowMs = DateTime.now().millisecondsSinceEpoch;
+                  _sampler9f.beginGesture(
+                    pointerId1: ids[0],
+                    pointerId2: ids[1],
+                    p1: p1s,
+                    p2: p2s,
+                    nowMs: nowMs,
+                  );
+                  // Begin TwoPointPartition with the same stable pair
+                  _tp.begin(id1: ids[0], id2: ids[1], p1: p1s, p2: p2s);
+                  // Lock BM-199 pair identity at gesture begin
+                  _pairId1 = ids[0];
+                  _pairId2 = ids[1];
+                  _pairLocked = true;
+                  debugPrint(
+                    '[BM-199 PAIR] id1=#${_pairId1} id2=#${_pairId2} locked=true',
+                  );
+                  debugPrint(
+                    '[BM-199 IDLOCK] begin: A=#${_pairId1} B=#${_pairId2}',
+                  );
+                }
                 // Init BM-199: DPR-aware minSep
                 // BM-199B.2: Use fixed logical minSep for gating (64 px)
                 final double minSep = 64.0;
@@ -882,14 +972,23 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                   final int nowMsAll = frameTsAll.inMicroseconds > 0
                       ? frameTsAll.inMilliseconds
                       : DateTime.now().millisecondsSinceEpoch;
+                  // Reset per-frame ordering guard at the start of two-finger processing
+                  _par9eDidComputeThisFrame = false;
+                  // Reset pre-veto shield flag; will be recomputed after 9h state is updated
+                  _par9eShieldActive = false;
                   if (!_pairLocked && activeCount == 2) {
-                    final keys = _activePointers.keys.toList();
-                    _pairId1 = keys[0];
-                    _pairId2 = keys[1];
+                    // Canonicalize finger identity once per gesture: A=lowest ID, B=other
+                    final keys = _activePointers.keys.toList()..sort();
+                    _pairId1 = keys[0]; // A
+                    _pairId2 = keys[1]; // B
                     _pairLocked = true;
                     // BM-199 PAIR: log lock
                     debugPrint(
                       '[BM-199 PAIR] id1=#${_pairId1} id2=#${_pairId2} locked=true',
+                    );
+                    // ID lock log (once per gesture)
+                    debugPrint(
+                      '[BM-199 IDLOCK] begin: A=#${_pairId1} B=#${_pairId2}',
                     );
                     if (!_rigidCfgLogged) {
                       debugPrint(
@@ -920,6 +1019,11 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                       debugPrint(
                         '[BM-199 PAIR] WARNING frameworkOrder=#${keysNow[0]},#${keysNow[1]} lockedOrder=#${_pairId1},#${_pairId2}',
                       );
+                      // Explicit ID swap warning — mapping remains locked, swap ignored
+                      debugPrint(
+                        '[BM-199 IDSWAP] attempt ignored: incoming=(#${keysNow[0]},#${keysNow[1]}) '
+                        'locked=(A=#${_pairId1},B=#${_pairId2})',
+                      );
                     }
                   }
                   if (_pairLocked &&
@@ -932,13 +1036,78 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                     p1 = _activePointers[pid1]!;
                     p2 = _activePointers[pid2]!;
                     sep = (p1 - p2).distance;
-                    // BM-200B.9e: raw-delta parallel veto
-                    _currentParVeto = _par9e.update(p1_now: p1, p2_now: p2);
+                    // BM-200B.9f: emit coalesced two-finger sample and update 9e veto
+                    final sample = _sampler9f.tryEmit(nowMsAll);
+                    if (sample != null) {
+                      // 9h compute first; single-source state for the rest of this frame
+                      _par9eState = _par9e.updateAndGet(
+                        p1_now: sample.p1Now,
+                        p2_now: sample.p2Now,
+                      );
+                      _par9eDidComputeThisFrame = true;
+                      _currentParVeto = _par9eState!.parVeto;
+                      // Pre-veto shield: active while not latched and cos>=0.95 with validN<6 on a valid frame
+                      _par9eShieldActive =
+                          (_par9eState!.frameValid &&
+                          !_currentParVeto &&
+                          _par9eState!.validN < 6 &&
+                          _par9eState!.cosParAvg >= 0.95);
+                      // Capture invariants for this frame
+                      _par9eLastGid = _par9eState!.gestureId;
+                      _par9eLastSeq = _par9eState!.frameSeq;
+                      _par9eLastVer = _par9eState!.stateVersion;
+                      _par9eLastCos = _par9eState!.cosParAvg;
+                      _par9eLastSep = _par9eState!.sepFracAvg;
+                      // parVeto already reflected in _currentParVeto
+                      // 9h rising edge → start guard window
+                      if (!_par9ePrevVeto && _currentParVeto) {
+                        _par9eEntryMs = nowMsAll;
+                        debugPrint('[FREEZE] start parVeto=true');
+                      }
+                      _par9ePrevVeto = _currentParVeto;
+                      // BM-199B.1 P1: log stable two-point kinematics using coalesced sample
+                      if (_tp.active && pid1 == _tp.id1 && pid2 == _tp.id2) {
+                        final st = _tp.update(
+                          p1: sample.p1Now,
+                          p2: sample.p2Now,
+                        );
+                        debugPrint(
+                          '[BM-199B.1 P1] ids=(#${st.id1},#${st.id2}) '
+                          'centroid=(${st.centroid.dx.toStringAsFixed(2)},${st.centroid.dy.toStringAsFixed(2)}) '
+                          'sep=${st.sepPx.toStringAsFixed(2)} '
+                          'heading=${st.headingRad.toStringAsFixed(3)} '
+                          'd1=(${st.d1.dx.toStringAsFixed(2)},${st.d1.dy.toStringAsFixed(2)}) '
+                          'd2=(${st.d2.dx.toStringAsFixed(2)},${st.d2.dy.toStringAsFixed(2)})',
+                        );
+                      }
+                    }
                     _bm200b8UpdateParallelVeto(
                       p1: p1,
                       p2: p2,
                       tNowMs: nowMsAll,
                     );
+                    // Compute per-frame guard state based on 9h entry time
+                    _par9eGuardActive =
+                        (_par9eEntryMs >= 0) &&
+                        ((nowMsAll - _par9eEntryMs) < _par9eEntryGuardMs);
+                    // [FREEZE] logging once per frame while active, and end when it stops
+                    if (_par9eGuardActive) {
+                      final int tFreeze = (_par9eEntryMs >= 0)
+                          ? (nowMsAll - _par9eEntryMs)
+                          : 0;
+                      debugPrint(
+                        '[FREEZE] active t=' +
+                            tFreeze.toString() +
+                            'ms → suppress {Apply, Locks}.',
+                      );
+                      _freezePrevActive = true;
+                    } else if (_freezePrevActive) {
+                      final int tFreeze = (_par9eEntryMs >= 0)
+                          ? (nowMsAll - _par9eEntryMs)
+                          : 0;
+                      debugPrint('[FREEZE] end t=' + tFreeze.toString() + 'ms');
+                      _freezePrevActive = false;
+                    }
                     // Feed engine (non-authoritative in this stage)
                     _bmEngine.onPointerPairUpdate(p1, p2, nowMsAll);
                   } else if (activeCount >= 2) {
@@ -948,13 +1117,78 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                     p1 = _activePointers[pid1]!;
                     p2 = _activePointers[pid2]!;
                     sep = (p1 - p2).distance;
-                    // BM-200B.9e: raw-delta parallel veto
-                    _currentParVeto = _par9e.update(p1_now: p1, p2_now: p2);
+                    // BM-200B.9f: emit coalesced two-finger sample and update 9e veto
+                    final sample = _sampler9f.tryEmit(nowMsAll);
+                    if (sample != null) {
+                      // 9h compute first; single-source state for the rest of this frame
+                      _par9eState = _par9e.updateAndGet(
+                        p1_now: sample.p1Now,
+                        p2_now: sample.p2Now,
+                      );
+                      _par9eDidComputeThisFrame = true;
+                      _currentParVeto = _par9eState!.parVeto;
+                      // Pre-veto shield for unlocked pair path
+                      _par9eShieldActive =
+                          (_par9eState!.frameValid &&
+                          !_currentParVeto &&
+                          _par9eState!.validN < 6 &&
+                          _par9eState!.cosParAvg >= 0.95);
+                      // Capture invariants for this frame
+                      _par9eLastGid = _par9eState!.gestureId;
+                      _par9eLastSeq = _par9eState!.frameSeq;
+                      _par9eLastVer = _par9eState!.stateVersion;
+                      _par9eLastCos = _par9eState!.cosParAvg;
+                      _par9eLastSep = _par9eState!.sepFracAvg;
+                      // parVeto already reflected in _currentParVeto
+                      // 9h rising edge → start guard window
+                      if (!_par9ePrevVeto && _currentParVeto) {
+                        _par9eEntryMs = nowMsAll;
+                        debugPrint('[FREEZE] start parVeto=true');
+                      }
+                      _par9ePrevVeto = _currentParVeto;
+                      // BM-199B.1 P1: log two-point kinematics (unlocked case)
+                      if (_tp.active && pid1 == _tp.id1 && pid2 == _tp.id2) {
+                        final st = _tp.update(
+                          p1: sample.p1Now,
+                          p2: sample.p2Now,
+                        );
+                        debugPrint(
+                          '[BM-199B.1 P1] ids=(#${st.id1},#${st.id2}) '
+                          'centroid=(${st.centroid.dx.toStringAsFixed(2)},${st.centroid.dy.toStringAsFixed(2)}) '
+                          'sep=${st.sepPx.toStringAsFixed(2)} '
+                          'heading=${st.headingRad.toStringAsFixed(3)} '
+                          'd1=(${st.d1.dx.toStringAsFixed(2)},${st.d1.dy.toStringAsFixed(2)}) '
+                          'd2=(${st.d2.dx.toStringAsFixed(2)},${st.d2.dy.toStringAsFixed(2)})',
+                        );
+                      }
+                    }
                     _bm200b8UpdateParallelVeto(
                       p1: p1,
                       p2: p2,
                       tNowMs: nowMsAll,
                     );
+                    // Compute per-frame guard state based on 9h entry time
+                    _par9eGuardActive =
+                        (_par9eEntryMs >= 0) &&
+                        ((nowMsAll - _par9eEntryMs) < _par9eEntryGuardMs);
+                    // [FREEZE] logging once per frame while active, and end when it stops
+                    if (_par9eGuardActive) {
+                      final int tFreeze = (_par9eEntryMs >= 0)
+                          ? (nowMsAll - _par9eEntryMs)
+                          : 0;
+                      debugPrint(
+                        '[FREEZE] active t=' +
+                            tFreeze.toString() +
+                            'ms → suppress {Apply, Locks}.',
+                      );
+                      _freezePrevActive = true;
+                    } else if (_freezePrevActive) {
+                      final int tFreeze = (_par9eEntryMs >= 0)
+                          ? (nowMsAll - _par9eEntryMs)
+                          : 0;
+                      debugPrint('[FREEZE] end t=' + tFreeze.toString() + 'ms');
+                      _freezePrevActive = false;
+                    }
                     _bmEngine.onPointerPairUpdate(p1, p2, nowMsAll);
                   }
                   // Pointer-based per-frame angle and deltas for gating
@@ -1066,10 +1300,15 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                       r2LenLog = r2Len;
                       final double sepSafe = math.max(sep, 48.0);
                       residualFracInst = (r1Len + r2Len) / sepSafe;
-                      final double residualMax =
-                          _bm199Gate?.p.residualFracMax ?? 0.12;
-                      // Veto when residual exceeds threshold (movement not rigid enough)
-                      panVeto = residualFracInst > residualMax;
+                      // Hysteresis: enter at ≥0.12, exit at ≤0.08
+                      if (!_residualVetoLatched &&
+                          residualFracInst >= _residVetoEnter) {
+                        _residualVetoLatched = true;
+                      } else if (_residualVetoLatched &&
+                          residualFracInst <= _residVetoExit) {
+                        _residualVetoLatched = false;
+                      }
+                      panVeto = _residualVetoLatched;
                       rigidHave = true;
 
                       // BM-199B.4: legacy inputs for windowed parallel-pan veto (kept for possible future use)
@@ -1152,6 +1391,62 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                   final bool rotDominates = angleEvidence > (2.0 * competitor);
                   _eAngle = angleEvidence;
 
+                  // BM-200B.9h APPLY: Early hard gate before any accumulators/locks
+                  // Reset post office APPLY for this frame
+                  _postApplyPending = false;
+                  bool skipLockThisFrame = false;
+                  // ORDERING: ensure 9h compute has occurred this frame before APPLY
+                  if (!_par9eDidComputeThisFrame && p1 != null && p2 != null) {
+                    // Force a one-off compute to uphold ordering guarantees
+                    _par9eState = _par9e.updateAndGet(p1_now: p1, p2_now: p2);
+                    _currentParVeto = _par9eState!.parVeto;
+                    // Capture invariants for this frame (since we computed here)
+                    _par9eLastGid = _par9eState!.gestureId;
+                    _par9eLastSeq = _par9eState!.frameSeq;
+                    _par9eLastVer = _par9eState!.stateVersion;
+                    _par9eLastCos = _par9eState!.cosParAvg;
+                    _par9eLastSep = _par9eState!.sepFracAvg;
+                    _par9eDidComputeThisFrame = true;
+                    debugPrint(
+                      '[BM-200B.9h ORDER_FIX] forced PAR compute before APPLY',
+                    );
+                  } else if (!_par9eDidComputeThisFrame) {
+                    debugPrint(
+                      '[BM-200B.9h ORDER_BUG] cannot compute PAR before APPLY: pointers missing',
+                    );
+                  }
+                  if (_currentParVeto ||
+                      _par9eGuardActive ||
+                      _par9eShieldActive) {
+                    // Zero per-frame deltas for this frame
+                    angleEvidence = 0.0;
+                    _eAngle = 0.0;
+                    _eScale = 0.0;
+                    // Also force incremental deltas to zero for logs/peaks
+                    dAngleInc = 0.0;
+                    // dScaleInc was final; treat as zero for any downstream usage by _eScale already set
+                    // Prevent accumulator growth; let window decay prune old samples
+                    double raBefore = _bm199Gate?.rotAccum ?? 0.0;
+                    double zaBefore = _bm199Gate?.zoomAccum ?? 0.0;
+                    if (_bm199Gate != null) {
+                      _bm199Gate!.tickNoGrowth(nowMs: nowMsAll, sepPx: sep);
+                    }
+                    double raAfter = _bm199Gate?.rotAccum ?? raBefore;
+                    double zaAfter = _bm199Gate?.zoomAccum ?? zaBefore;
+                    // Log the application of the veto in the requested format
+                    debugPrint(
+                      '[BM-200B.9h APPLY] parVeto=true → dθ=0 dScale=0 '
+                      '(rotAccum: ${raBefore.toStringAsFixed(3)}→${raAfter.toStringAsFixed(3)}, '
+                      'zoomAccum: ${zaBefore.toStringAsFixed(3)}→${zaAfter.toStringAsFixed(3)})',
+                    );
+                    // Defer concise APPLY print until after GATE
+                    _postApplyPending = true;
+                    _postApplyPar = true;
+                    _postApplyDAngle = 0.0;
+                    _postApplyDScale = 0.0;
+                    skipLockThisFrame = true;
+                  }
+
                   // BM-197: Evidence logging while undecided
                   if (_twoMode == TwoFingerMode.undecided) {
                     // Per-undecided-frame rigid diagnostics
@@ -1211,7 +1506,57 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
 
                   if (_twoMode == TwoFingerMode.undecided) {
                     // BM-199: maintain sliding accumulators and suggest lock; also disable 2-finger pan while undecided for Test B
-                    if (_bm199Gate != null && pid1 != null && pid2 != null) {
+                    // While parVeto=true, emit a once-per-second summary showing accumulators do not grow
+                    if (_currentParVeto) {
+                      final now9g = DateTime.now();
+                      if (_bm200b9gLastSum == null ||
+                          now9g.difference(_bm200b9gLastSum!).inMilliseconds >=
+                              1000) {
+                        _bm200b9gLastSum = now9g;
+                        final double ra = _bm199Gate?.rotAccum ?? 0.0;
+                        final double za = _bm199Gate?.zoomAccum ?? 0.0;
+                        debugPrint(
+                          '[BM-200B.9g SUM] rotAccum=${ra.toStringAsFixed(3)} '
+                          'zoomAccum=${za.toStringAsFixed(3)} (should stay < 0.1)',
+                        );
+                      }
+                    }
+                    if (!skipLockThisFrame &&
+                        _bm199Gate != null &&
+                        pid1 != null &&
+                        pid2 != null) {
+                      // ORDERING: ensure 9h compute has occurred this frame before feeding BM-199
+                      if (!_par9eDidComputeThisFrame &&
+                          p1 != null &&
+                          p2 != null) {
+                        _par9eState = _par9e.updateAndGet(
+                          p1_now: p1,
+                          p2_now: p2,
+                        );
+                        _currentParVeto = _par9eState!.parVeto;
+                        // Pre-veto shield in ORDER_FIX path prior to GATE
+                        _par9eShieldActive =
+                            (_par9eState!.frameValid &&
+                            !_currentParVeto &&
+                            _par9eState!.validN < 6 &&
+                            _par9eState!.cosParAvg >= 0.95);
+                        _par9eLastGid = _par9eState!.gestureId;
+                        _par9eLastSeq = _par9eState!.frameSeq;
+                        _par9eLastVer = _par9eState!.stateVersion;
+                        _par9eLastCos = _par9eState!.cosParAvg;
+                        _par9eLastSep = _par9eState!.sepFracAvg;
+                        _par9eDidComputeThisFrame = true;
+                        debugPrint(
+                          '[BM-200B.9h ORDER_FIX] forced PAR compute before GATE',
+                        );
+                      } else if (!_par9eDidComputeThisFrame) {
+                        debugPrint(
+                          '[BM-200B.9h ORDER_BUG] cannot compute PAR before GATE: pointers missing',
+                        );
+                      }
+                      // Capture accumulators BEFORE feeding this frame (for APPLY log)
+                      final double raBeforeApply = _bm199Gate!.rotAccum;
+                      final double zaBeforeApply = _bm199Gate!.zoomAccum;
                       final pair = (pid1, pid2);
                       if (_bm199PairIds == null || _bm199PairIds != pair) {
                         _bm199Gate!.reset();
@@ -1240,6 +1585,29 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                         dx2: dx2,
                         dy2: dy2,
                       );
+                      // Unified APPLY log (non-veto path): after accumulators update
+                      final double raAfterApply = _bm199Gate!.rotAccum;
+                      final double zaAfterApply = _bm199Gate!.zoomAccum;
+                      debugPrint(
+                        '[BM-200B.9h APPLY] parVeto=false → dθ=' +
+                            dAngleInc.toStringAsFixed(3) +
+                            ' dScale=' +
+                            dScaleInc.toStringAsFixed(3) +
+                            ' (rotAccum: ' +
+                            raBeforeApply.toStringAsFixed(3) +
+                            '→' +
+                            raAfterApply.toStringAsFixed(3) +
+                            ', zoomAccum: ' +
+                            zaBeforeApply.toStringAsFixed(3) +
+                            '→' +
+                            zaAfterApply.toStringAsFixed(3) +
+                            ')',
+                      );
+                      // Defer concise APPLY print until after GATE
+                      _postApplyPending = true;
+                      _postApplyPar = false;
+                      _postApplyDAngle = dAngleInc;
+                      _postApplyDScale = dScaleInc;
                       // BM-200B.9a θ: sanity log when twist is present but no rotate lock
                       final double dThetaAbs = dAnglePtrRaw.abs();
                       if (lock != BM199Lock.rotate &&
@@ -1283,10 +1651,17 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                       final double comp = math.max(zoomA, nonPanA * kNonPanW);
                       final bool dominanceOK = rotA >= (kDominanceCfg * comp);
                       final bool absTwistOK = rotA >= (_bm199Gate!.p.minRotAbs);
-                      final bool wantRotate = dominanceOK;
+                      final bool antiReady = _par9eState?.antiParReady ?? false;
+                      final bool wantRotate = dominanceOK && antiReady;
                       // Use centroid-residual instantaneous pan veto
                       // Combine centroid-residual veto with BM-200B.8 EMA-based parallel veto
-                      final bool vetoActive = panVeto || _currentParVeto;
+                      // NA hygiene: consider 9h veto only when this frame is computed (frameValid)
+                      final bool par9eKnown =
+                          (_par9eState != null) && _par9eState!.frameValid;
+                      final bool vetoActive =
+                          panVeto ||
+                          (par9eKnown && _currentParVeto) ||
+                          _par9eGuardActive;
                       // Split into three lines with explicit prefixes so filters don't hide continuation lines
                       debugPrint(
                         '[BM-199 D1] rot=${rotA.toStringAsFixed(2)} zoom=${zoomA.toStringAsFixed(2)} '
@@ -1298,15 +1673,17 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                         'panVeto=${vetoActive.toString()} sep=${sep.toStringAsFixed(1)}',
                       );
                       debugPrint(
-                        '[BM-199 D3] residualFracMax=${(_bm199Gate?.p.residualFracMax ?? 0.12).toStringAsFixed(3)} '
-                        'absTwistOK=${absTwistOK.toString()} wantRotate=${wantRotate.toString()} veto=${vetoActive.toString()}',
+                        '[BM-199 D3] residualEnter=${_residVetoEnter.toStringAsFixed(3)} '
+                        'residualExit=${_residVetoExit.toStringAsFixed(3)} '
+                        'absTwistOK=${absTwistOK.toString()} antiParReady=${antiReady.toString()} '
+                        'wantRotate=${wantRotate.toString()} veto=${vetoActive.toString()}',
                       );
                       if (_bm199PrevVeto == null ||
                           _bm199PrevVeto != vetoActive) {
                         debugPrint(
                           '[BM-199 VETO] panVeto=${vetoActive.toString()} '
                           'residualFrac=${residualFracInst.toStringAsFixed(3)} '
-                          'threshold=${(_bm199Gate?.p.residualFracMax ?? 0.12).toStringAsFixed(3)}',
+                          'enter=${_residVetoEnter.toStringAsFixed(2)} exit=${_residVetoExit.toStringAsFixed(2)}',
                         );
                         _bm199PrevVeto = vetoActive;
                       }
@@ -1333,6 +1710,8 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                             : rotRate;
                         final bool rateOkRotate = rotRateDb >= minRotRate;
                         final bool rateOkZoom = zoomRate >= minZoomRate;
+                        final bool antiReadyEnter =
+                            _par9eState?.antiParReady ?? false;
                         final String enterLabel = veto
                             ? (lock == BM199Lock.rotate
                                   ? 'Rotate(cand,veto)'
@@ -1347,7 +1726,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                                   'zoomAccum=${_bm199Gate!.zoomAccum.toStringAsFixed(3)} '
                                   'nonPanAccum=${_bm199Gate!.nonPanAccum.toStringAsFixed(3)} '
                                   'k=${_bm199Gate!.p.kDominance.toStringAsFixed(2)} '
-                                  'veto=$veto rotRate=${rotRate.toStringAsFixed(2)} '
+                                  'veto=$veto antiParReady=${antiReadyEnter.toString()} rotRate=${rotRate.toStringAsFixed(2)} '
                                   'zoomRate=${zoomRate.toStringAsFixed(2)}',
                         );
                         // Force the existing decision to lock immediately per BM-199 unless vetoed by parallel-like pan
@@ -1411,7 +1790,11 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                     final double zoomRateGate =
                         (_bm199Gate?.zoomAccum ?? 0.0) / secGate;
                     final bool anyGate = rotDom || zoomDom;
-                    if (_currentParVeto || !anyGate) {
+                    if (((_par9eState?.frameValid ?? false) &&
+                            _currentParVeto) ||
+                        _par9eShieldActive ||
+                        _par9eGuardActive ||
+                        !anyGate) {
                       _bm200bGateOnSinceMs = -1;
                       _bm200bGateRotate = null;
                     } else {
@@ -1431,11 +1814,21 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                           ' sep=' +
                           sep.toStringAsFixed(1) +
                           ' parVeto=' +
-                          _currentParVeto.toString() +
+                          (((_par9eState != null) && _par9eState!.frameValid)
+                              ? _currentParVeto.toString()
+                              : 'NA') +
                           ' cosParAvg=' +
-                          _cosParAvg.toStringAsFixed(3) +
+                          ((_par9eState == null ||
+                                  (_par9eState!.validN < 2) ||
+                                  !(_par9eState!.frameValid))
+                              ? 'NA'
+                              : _par9eState!.cosParAvg.toStringAsFixed(3)) +
                           ' sepFracAvg=' +
-                          _sepFracAvg.toStringAsFixed(3) +
+                          ((_par9eState == null ||
+                                  (_par9eState!.validN < 2) ||
+                                  !(_par9eState!.frameValid))
+                              ? 'NA'
+                              : _par9eState!.sepFracAvg.toStringAsFixed(3)) +
                           ' veto9d=' +
                           _parVeto9d.toString() +
                           ' rotA=' +
@@ -1448,53 +1841,175 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                           zoomRateGate.toStringAsFixed(2) +
                           ' dwell=' +
                           dwellMs.toString() +
-                          'ms',
+                          'ms' +
+                          ' gid=' +
+                          (_par9eState == null
+                              ? 'NA'
+                              : _par9eState!.gestureId.toString()) +
+                          ' seq=' +
+                          (_par9eState == null
+                              ? 'NA'
+                              : _par9eState!.frameSeq.toString()) +
+                          ' ver=' +
+                          (_par9eState == null
+                              ? 'NA'
+                              : _par9eState!.stateVersion.toString()) +
+                          ' par=' +
+                          _currentParVeto.toString(),
                     );
+                    // One-screen verification concise GATE line (after PAR)
+                    debugPrint(
+                      '[GATE] gestureId=' +
+                          _par9eLastGid.toString() +
+                          ' frameSeq=' +
+                          _par9eLastSeq.toString() +
+                          ' stateVersion=' +
+                          _par9eLastVer.toString() +
+                          ' parVeto=' +
+                          (((_par9eState != null) && _par9eState!.frameValid)
+                              ? _currentParVeto.toString()
+                              : 'NA') +
+                          ' cosParAvg=' +
+                          (((_par9eState == null) ||
+                                  !_par9eState!.frameValid ||
+                                  (_par9eState!.validN < 2))
+                              ? 'NA'
+                              : _par9eLastCos.toStringAsFixed(3)),
+                    );
+                    // One-screen verification concise APPLY line (after GATE)
+                    if (_postApplyPending) {
+                      debugPrint(
+                        '[APPLY] parVeto=' +
+                            (_postApplyPar ? 'true' : 'false') +
+                            ' → dθ=' +
+                            _postApplyDAngle.toStringAsFixed(3) +
+                            ' dScale=' +
+                            _postApplyDScale.toStringAsFixed(3),
+                      );
+                      _postApplyPending = false;
+                    }
                     if (zoomDom || rotDom) {
-                      // Apply combined parallel veto (EMA + centroid residual)
-                      final bool veto = panVeto || _currentParVeto;
-                      if (veto) {
-                        debugPrint(
-                          '[BM-200B.9c GATE] blocked=parallel cosPar=' +
-                              _cosParAvg.toStringAsFixed(3) +
-                              ' sepFrac=' +
-                              _sepFracAvg.toStringAsFixed(3) +
-                              ' veto9e=' +
-                              _currentParVeto.toString() +
-                              ' veto9d=' +
-                              _parVeto9d.toString(),
-                        );
-                        // Stay undecided; reset dwell timer
-                        _lastEvidenceTime = now;
-                      } else if (now
-                              .difference(_lastEvidenceTime)
-                              .inMilliseconds >=
-                          kDwellMs) {
-                        // After dwell, require minimum rates and decide with tie-breaker
-                        final double minRotRate =
-                            _bm199Gate?.p.minRotRate ?? 0.20;
-                        final double minZoomRate =
-                            _bm199Gate?.p.minZoomRate ?? 0.20;
-                        final bool wantRotate =
-                            rotDom && (rotRateDbGate >= minRotRate) && sepOk;
-                        final bool wantZoom =
-                            zoomDom && (zoomRateGate >= minZoomRate) && sepOk;
-                        if (wantRotate || wantZoom) {
-                          if (wantRotate && wantZoom) {
-                            decided = (rotRateDbGate >= zoomRateGate)
-                                ? TwoFingerMode.rotate
-                                : TwoFingerMode.zoom;
-                          } else {
-                            decided = wantRotate
-                                ? TwoFingerMode.rotate
-                                : TwoFingerMode.zoom;
-                          }
-                          reason = decided == TwoFingerMode.rotate
-                              ? 'lock rotate'
-                              : 'lock zoom';
+                      // Verify single-source invariants before attempting any lock
+                      bool stateOk = true;
+                      if (_par9eState != null) {
+                        final s = _par9eState!;
+                        final bool idOk = s.gestureId == _par9eLastGid;
+                        final bool seqOk = s.frameSeq == _par9eLastSeq;
+                        final bool verOk = s.stateVersion == _par9eLastVer;
+                        if (!(idOk && seqOk && verOk)) {
+                          debugPrint(
+                            '[BM-200B.9h STATE_MISMATCH] gate gid=${s.gestureId} seq=${s.frameSeq} ver=${s.stateVersion} '
+                            'lastPAR gid=${_par9eLastGid} seq=${_par9eLastSeq} ver=${_par9eLastVer}',
+                          );
+                          stateOk = false;
                         } else {
-                          // Rates too low; keep accumulating
+                          final double cosGate = s.cosParAvg;
+                          if ((cosGate - _par9eLastCos).abs() > 0.02) {
+                            debugPrint(
+                              '[BM-200B.9h COS_DIVERGE] gid=${s.gestureId} seq=${s.frameSeq} '
+                              'cosGate=${cosGate.toStringAsFixed(3)} cosPAR=${_par9eLastCos.toStringAsFixed(3)}',
+                            );
+                            stateOk = false;
+                          }
+                        }
+                      }
+                      if (!stateOk) {
+                        // Abort any lock attempt this frame
+                        _lastEvidenceTime = DateTime.now();
+                      } else {
+                        // Apply combined parallel veto (EMA + centroid residual)
+                        // Include freeze window in veto so BM-199 lock layer is fully suppressed
+                        final bool par9eKnownHere =
+                            (_par9eState != null) && _par9eState!.frameValid;
+                        final bool veto =
+                            panVeto ||
+                            (par9eKnownHere && _currentParVeto) ||
+                            _par9eGuardActive ||
+                            _par9eShieldActive;
+                        if (veto) {
+                          // Post office visibility: explicit reason line
+                          final bool vetoByFreeze = _par9eGuardActive;
+                          final bool vetoByPar =
+                              par9eKnownHere && _currentParVeto;
+                          final bool vetoByShield = _par9eShieldActive;
+                          if (vetoByFreeze) {
+                            final int elapsed = (_par9eEntryMs >= 0)
+                                ? (DateTime.now().millisecondsSinceEpoch -
+                                      _par9eEntryMs)
+                                : 0;
+                            final int left = (_par9eEntryGuardMs - elapsed)
+                                .clamp(0, _par9eEntryGuardMs);
+                            debugPrint(
+                              '[GATE] skipped lock: reason=freeze (' +
+                                  left.toString() +
+                                  'ms left)',
+                            );
+                          }
+                          if (vetoByPar) {
+                            debugPrint('[GATE] skipped lock: reason=parVeto');
+                          }
+                          if (vetoByShield) {
+                            debugPrint(
+                              '[GATE] skipped lock: reason=preVetoShield',
+                            );
+                          }
+                          debugPrint(
+                            '[BM-200B.9c GATE] blocked=parallel cosPar=' +
+                                (par9eKnownHere
+                                    ? _par9eLastCos.toStringAsFixed(3)
+                                    : 'NA') +
+                                ' sepFrac=' +
+                                _par9eLastSep.toStringAsFixed(3) +
+                                ' gid=' +
+                                _par9eLastGid.toString() +
+                                ' seq=' +
+                                _par9eLastSeq.toString() +
+                                ' ver=' +
+                                _par9eLastVer.toString() +
+                                ' veto9e=' +
+                                (par9eKnownHere
+                                    ? _currentParVeto.toString()
+                                    : 'NA') +
+                                ' veto9d=' +
+                                _parVeto9d.toString(),
+                          );
+                          // Stay undecided; reset dwell timer
                           _lastEvidenceTime = now;
+                        } else if (now
+                                .difference(_lastEvidenceTime)
+                                .inMilliseconds >=
+                            kDwellMs) {
+                          // After dwell, require minimum rates and decide with tie-breaker
+                          final double minRotRate =
+                              _bm199Gate?.p.minRotRate ?? 0.20;
+                          final double minZoomRate =
+                              _bm199Gate?.p.minZoomRate ?? 0.20;
+                          final bool wantRotate =
+                              rotDom &&
+                              (rotRateDbGate >= minRotRate) &&
+                              sepOk &&
+                              ((_par9eState != null && _par9eState!.frameValid)
+                                  ? (_par9eState!.antiParReady)
+                                  : false);
+                          final bool wantZoom =
+                              zoomDom && (zoomRateGate >= minZoomRate) && sepOk;
+                          if (wantRotate || wantZoom) {
+                            if (wantRotate && wantZoom) {
+                              decided = (rotRateDbGate >= zoomRateGate)
+                                  ? TwoFingerMode.rotate
+                                  : TwoFingerMode.zoom;
+                            } else {
+                              decided = wantRotate
+                                  ? TwoFingerMode.rotate
+                                  : TwoFingerMode.zoom;
+                            }
+                            reason = decided == TwoFingerMode.rotate
+                                ? 'lock rotate'
+                                : 'lock zoom';
+                          } else {
+                            // Rates too low; keep accumulating
+                            _lastEvidenceTime = now;
+                          }
                         }
                       }
                     } else {
@@ -2217,6 +2732,8 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                 _prevP1 = null;
                 _prevP2 = null;
                 _prevSep = null;
+                // End BM-199B.1 partition
+                _tp.end();
                 // _prevPairAngle = null;
                 _bm199Gate?.reset();
                 _bm199Gate = null;
@@ -2231,6 +2748,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                 _currentParVeto = false;
                 _parVeto9d = false;
                 _par9e.endGesture();
+                _sampler9f.endGesture();
                 // BM-199 removed per request
                 debugPrint(
                   '$_tag GESTURE end rot=${_rotation.toStringAsFixed(3)} '

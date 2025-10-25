@@ -85,8 +85,9 @@ class _FarmMapViewState extends State<FarmMapView> {
   // BM-200B.8: Parallel veto via EMA velocities
   static const double _parVMinPxS = 60.0; // px/s
   static const double _parEmaAlpha = 0.30; // smoothing factor
-  static const double _parCosTh = 0.985;
-  static const double _parSepTh = 0.05;
+  static const double _parCosTh = 0.95; // F4: parallelLike threshold
+  static const double _parSepTh = 0.01; // F4: tiny squeeze allowed
+  static const double _parMinPxPerFrame = 1.5; // F1: validity gate (px)
 
   // Raw pointers for simple heuristics
   final Map<int, Offset> _pointers = <int, Offset>{};
@@ -106,6 +107,8 @@ class _FarmMapViewState extends State<FarmMapView> {
   Offset _p1PrevForPar = Offset.zero, _p2PrevForPar = Offset.zero;
   double _tPrevMs = 0.0;
   bool _currentParVeto = false;
+  // Debug override to force-disable parallel veto without dead-code warnings
+  bool _debugForceParVetoFalse = false; // set to false to use _currentParVeto
 
   // Helpers
   double _angleFrom(Matrix4 rm) {
@@ -155,6 +158,14 @@ class _FarmMapViewState extends State<FarmMapView> {
 
     final Offset d1 = p1 - _p1PrevForPar;
     final Offset d2 = p2 - _p2PrevForPar;
+    // F1 validity gate: require max displacement strong enough in this frame
+    final double d1Mag = d1.distance;
+    final double d2Mag = d2.distance;
+    if (math.max(d1Mag, d2Mag) < _parMinPxPerFrame) {
+      // Skip updating averages and decision on uncertainty; leave parVeto=false
+      _currentParVeto = false;
+      return;
+    }
     final Offset v1 = d1 * invDt;
     final Offset v2 = d2 * invDt;
 
@@ -182,7 +193,8 @@ class _FarmMapViewState extends State<FarmMapView> {
     // separation fraction
     final double sep1 = (_p2PrevForPar - _p1PrevForPar).distance;
     final double sep2 = (p2 - p1).distance;
-    final double sepFracRaw = ((sep2 - sep1).abs()) / (sep1 > 1.0 ? sep1 : 1.0);
+    final double sepFracRaw =
+        ((sep2 - sep1).abs()) / math.max(math.max(sep2, sep1), 1.0);
 
     // EMA averages
     _cosParAvg = (1.0 - _parEmaAlpha) * _cosParAvg + _parEmaAlpha * cosParRaw;
@@ -192,6 +204,10 @@ class _FarmMapViewState extends State<FarmMapView> {
     // Decision
     _currentParVeto =
         !weakFinger && (_cosParAvg >= _parCosTh) && (_sepFracAvg <= _parSepTh);
+    // F4 — Anti-parallel does NOT veto
+    if (_cosParAvg < -0.90) {
+      _currentParVeto = false;
+    }
 
     // Debug line
     debugPrint(
@@ -298,7 +314,7 @@ class _FarmMapViewState extends State<FarmMapView> {
                 sepNow = (p1Now - p2Now).distance;
                 final double sepPrev = (p1Prev - p2Prev).distance;
                 // exact per-frame separation fraction relative to current separation
-                final double sepDen = sepNow > 1.0 ? sepNow : 1.0;
+                final double sepDen = math.max(math.max(sepNow, sepPrev), 1.0);
                 sepFrac = (sepNow - sepPrev).abs() / sepDen;
                 final double sepNorm = math.max(sepNow, 48.0);
                 nonPanEv = (d1 - d2).distance / sepNorm;
@@ -336,26 +352,58 @@ class _FarmMapViewState extends State<FarmMapView> {
               if (ds > 0) zoomEv = (math.log(dScale)).abs();
             }
 
-            _win.add(
-              _WinSample(
-                tMs: nowMs,
-                rot: rotEv,
-                zoom: zoomEv,
-                nonPan: nonPanEv,
-                cosPar: cosPar,
-                sepFrac: sepFrac,
-              ),
-            );
-            // Prune window
+            // F3 — Gate order: decide parVeto before accumulating evidence
+            // Prune window first (time advances regardless of adding a sample)
             while (_win.isNotEmpty && (nowMs - _win.first.tMs) > _windowMs) {
               _win.removeAt(0);
             }
-            // Compute window stats (for rotate/zoom gates and logs)
-            final _WinStats w = _computeWinStats(nowMs);
+            // Pre-stats before adding any new sample
+            final _WinStats wBefore = _computeWinStats(nowMs);
             // Use BM-200B.8 parallel veto result with debug bypass
             final bool parallelVetoWin = DEBUG_BYPASS_PARALLEL_VETO
                 ? false
-                : _currentParVeto;
+                : (_debugForceParVetoFalse ? false : _currentParVeto);
+
+            if (!parallelVetoWin) {
+              // Normal frame: add evidence sample
+              _win.add(
+                _WinSample(
+                  tMs: nowMs,
+                  rot: rotEv,
+                  zoom: zoomEv,
+                  nonPan: nonPanEv,
+                  cosPar: cosPar,
+                  sepFrac: sepFrac,
+                ),
+              );
+            }
+            // Compute window stats (for rotate/zoom gates and logs) AFTER APPLY decision
+            final _WinStats w = _computeWinStats(nowMs);
+            // Unified APPLY log (exactly one per frame)
+            final double raBefore = wBefore.rotAccum;
+            final double zaBefore = wBefore.zoomAccum;
+            final double raAfter = w.rotAccum;
+            final double zaAfter = w.zoomAccum;
+            final double dThetaApplied = parallelVetoWin ? 0.0 : dTheta;
+            // In this sample app, scale apply is via sm per frame; report 0 when vetoed
+            final double dScaleApplied = parallelVetoWin ? 0.0 : (dScale - 1.0);
+            debugPrint(
+              '[BM-200B.9h APPLY] parVeto=' +
+                  parallelVetoWin.toString() +
+                  ' → dθ=' +
+                  dThetaApplied.toStringAsFixed(3) +
+                  ' dScale=' +
+                  dScaleApplied.toStringAsFixed(3) +
+                  ' (rotAccum: ' +
+                  raBefore.toStringAsFixed(3) +
+                  '→' +
+                  raAfter.toStringAsFixed(3) +
+                  ', zoomAccum: ' +
+                  zaBefore.toStringAsFixed(3) +
+                  '→' +
+                  zaAfter.toStringAsFixed(3) +
+                  ')',
+            );
 
             // Classic per-frame heuristics (kept for unlock fallback)
             final bool hasRotZoomSignal =

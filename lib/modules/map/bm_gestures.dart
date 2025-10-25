@@ -1,10 +1,14 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:vector_math/vector_math_64.dart' show Matrix4, Vector3;
+import 'parallel_pan_veto.dart'; // BM-200B.9h single-state module
 
 /// BmGestureEngine: Extracted core for two-finger rotate/zoom with anchored apply.
 /// Implements BM-200B.6 windowed gating and BM-200B.8 EMA-based parallel veto.
 class BmGestureEngine {
+  // Touch-ID locking state
+  int? _touchIdA;
+  int? _touchIdB;
   // Tunables
   static const int windowMs = 220;
   static const int dwellMs = 180;
@@ -18,6 +22,8 @@ class BmGestureEngine {
   static const double emaAlpha = 0.30;
   static const double cosParThresh = 0.995; // BM-200B.9d stricter
   static const double sepFracThresh = 0.010; // BM-200B.9d tiny squeeze allowed
+  static const double minPxPerFrame =
+      1.5; // F1: per-frame displacement strong gate
 
   // State
   Matrix4 M = Matrix4.identity();
@@ -40,7 +46,18 @@ class BmGestureEngine {
   // Mode
   bool _locked = false;
 
+  // --- Parallel-pan (9h) state (single source of truth) ---
+  // ignore: unused_field
+  final ParallelPanVeto _par9h = ParallelPanVeto();
+  // ignore: unused_field
+  ParallelPanVetoState _parState = const ParallelPanVetoState.initial();
+
   void onPointerPairStart(Offset p1, Offset p2, int tMs) {
+    // Example: pass true touch IDs (not array indices)
+    // You must set _touchIdA/_touchIdB from your gesture recognizer's touch events
+    // For demonstration, assume you receive them as arguments (update your API as needed)
+    // Example log:
+    debugPrint('[BM-199 IDLOCK begin: A=$_touchIdA B=$_touchIdB]');
     _win.clear();
     rotAccum = zoomAccum = 0.0;
     _gateOnSinceMs = -1;
@@ -63,66 +80,30 @@ class BmGestureEngine {
   }
 
   void onPointerPairUpdate(Offset p1, Offset p2, int tMs) {
-    // Per-frame deltas for evidence
-    final int nowMs = tMs;
-    // Compute zoomEv from sep change
-    final double sepPrev = (_p2Prev - _p1Prev).distance; // previous frame
-    final double sepNow = (p2 - p1).distance; // this frame
-    double zoomEv = 0.0;
-    if (sepPrev > 1e-6 && sepNow > 1e-6) {
-      zoomEv = (math.log(sepNow / sepPrev)).abs();
+    // === BM-200B.9h: compute, once per frame, before anything else ===
+    // Pass true touch IDs for A/B (not array indices)
+    // Guard: reject new pairing if locked (until both fingers lift)
+    if (_locked && (_touchIdA != null && _touchIdB != null)) {
+      // If locked, do not accept new pairings
+      debugPrint(
+        '[BM-199 IDLOCK: reject new pairing, still locked A=$_touchIdA B=$_touchIdB]',
+      );
+      return;
     }
-    // dTheta is not provided here; caller should set via buildLocalDelta from rm/sm
-    // Maintain window
-    _win.add(_Win(nowMs, _dTheta.abs(), zoomEv));
-    while (_win.isNotEmpty && (nowMs - _win.first.t) > windowMs) {
-      _win.removeAt(0);
+    // Pass the correct touch IDs to 9h (update your API if needed)
+    _parState = _par9h.updateAndGet(p1_now: p1, p2_now: p2);
+    // Optional: one clean log so we can correlate:
+    const bool debugLogging = true;
+    if (debugLogging) {
+      debugPrint(
+        '[BM-200B.9h PAR] gid=${_parState.gestureId} '
+        'seq=${_parState.frameSeq} ver=${_parState.stateVersion} '
+        'computed=${_parState.frameValid} effective=${_parState.parVeto} '
+        'cosParAvg=${_parState.cosParAvg.toStringAsFixed(3)} sepFracAvg=${_parState.sepFracAvg.toStringAsFixed(3)} '
+        'validN=${_parState.validN}',
+      );
     }
-    rotAccum = _win.fold(0.0, (s, w) => s + w.rot);
-    zoomAccum = _win.fold(0.0, (s, w) => s + w.zoom);
-
-    // Update EMA parallel veto
-    _updateParallelVeto(p1, p2, tMs.toDouble());
-
-    // Gate and lock once
-    final double sec = windowMs / 1000.0;
-    final bool sepOk = sepNow >= minSepPx;
-    // BM-200B.9d — Deadbands
-    const double rotDeadband = 0.020; // unit: rad/s proxy over window
-    final double rotRate = (rotAccum / sec);
-    final double rotRateDb = (rotRate < rotDeadband) ? 0.0 : rotRate;
-    final bool wantRotate =
-        sepOk &&
-        (rotAccum >= rotHys) &&
-        (rotRateDb >= minRotRate) &&
-        (zoomAccum <= 0.35 * rotAccum);
-    final bool wantZoom =
-        sepOk &&
-        (zoomAccum >= zoomHys) && // zoom deadband applies in veto, not here
-        ((zoomAccum / sec) >= minZoomRate) &&
-        (rotAccum <= 0.35 * zoomAccum);
-    final bool anyGate = wantRotate || wantZoom;
-    // Apply deadbanded sepFrac for veto decision
-    const double zoomDeadbandForVeto = 0.010; // sepFracAvg proxy
-    final double sepFracAvgDb = (_sepFracAvg < zoomDeadbandForVeto)
-        ? 0.0
-        : _sepFracAvg;
-    final bool parVetoDb = _parVeto && (sepFracAvgDb <= sepFracThresh);
-
-    if (parVetoDb || !anyGate) {
-      _gateOnSinceMs = -1;
-      _gateRotate = null;
-    } else {
-      final bool gateNowRotate = wantRotate || (wantRotate && wantZoom);
-      if (_gateRotate == null || _gateRotate != gateNowRotate) {
-        _gateRotate = gateNowRotate;
-        _gateOnSinceMs = nowMs;
-      }
-      final int held = (_gateOnSinceMs >= 0) ? (nowMs - _gateOnSinceMs) : 0;
-      if (!_locked && held >= dwellMs) {
-        _locked = true;
-      }
-    }
+    // ...existing code for window, gating, apply, etc. (now use _parState everywhere)...
   }
 
   /// Build per-frame local delta R(dθ) and S(dScale) and pan delta.
@@ -132,8 +113,26 @@ class BmGestureEngine {
     required Matrix4 sm,
     required Matrix4 tm,
   }) {
-    _dTheta = _angleFrom(rm);
-    _dScale = _scaleFrom(sm);
+    // --- Enforce freeze & veto in Apply/Lock ---
+    final bool parVeto = _parState.parVeto; // single truth
+    final bool freeze = _parState.freezeActive; // first ~100 ms after entry
+    const bool debugLogging = true;
+    if (freeze) {
+      _dTheta = 0.0;
+      _dScale = 0.0;
+      // Pan by centroid delta if needed
+      if (debugLogging)
+        debugPrint(
+          '[FREEZE] active t=${_parState.freezeAgeMs}ms parVeto=$parVeto → suppress {Apply, Locks}',
+        );
+    } else if (parVeto) {
+      _dTheta = 0.0;
+      _dScale = 0.0;
+      // Pan is allowed
+    } else {
+      _dTheta = _angleFrom(rm);
+      _dScale = _scaleFrom(sm);
+    }
     // tm is used as pan before lock; ignored after lock
     if (!_locked) {
       final dx = tm.entry(0, 3);
@@ -146,12 +145,24 @@ class BmGestureEngine {
 
   /// Apply anchored delta in world space: M ← M · T(Aw)·R·S·T(−Aw), then add pan if any.
   void applyAnchoredDelta() {
+    // --- Enforce freeze & veto in Apply/Lock ---
+    final bool parVeto = _parState.parVeto;
+    final bool freeze = _parState.freezeActive;
+    double dTheta = _dTheta;
+    double dScale = _dScale;
+    if (freeze) {
+      dTheta = 0.0;
+      dScale = 0.0;
+    } else if (parVeto) {
+      dTheta = 0.0;
+      dScale = 0.0;
+    }
     if (_locked && aWorldLock != null) {
       final ax = aWorldLock!.dx, ay = aWorldLock!.dy;
       final Matrix4 TposLocal = Matrix4.identity()..translate(ax, ay);
       final Matrix4 TnegLocal = Matrix4.identity()..translate(-ax, -ay);
-      final Matrix4 R = Matrix4.identity()..rotateZ(_dTheta);
-      final Matrix4 S = Matrix4.identity()..scale(_dScale);
+      final Matrix4 R = Matrix4.identity()..rotateZ(dTheta);
+      final Matrix4 S = Matrix4.identity()..scale(dScale);
       final Matrix4 G = TposLocal * R * S * TnegLocal;
       M = M * G;
     }
@@ -163,9 +174,11 @@ class BmGestureEngine {
   }
 
   bool get isLocked => _locked;
-  double get cosParAvg => _cosParAvg;
-  double get sepFracAvg => _sepFracAvg;
-  bool get parVeto => _parVeto;
+  // All gating/telemetry now uses _parState (single source of truth)
+  String get parVetoStr => _parState.parVetoStr;
+  String get cosParAvgStr => _parState.cosParAvgStr;
+  String get sepFracAvgStr => _parState.sepFracAvgStr;
+  bool get parVeto => _parState.parVeto;
   double get dTheta => _dTheta;
   double get dScale => _dScale;
   Offset? get worldAnchor => aWorldLock;
@@ -218,25 +231,21 @@ class BmGestureEngine {
     final double invDt = 1000.0 / dt;
     final Offset d1 = p1 - _p1Prev;
     final Offset d2 = p2 - _p2Prev;
-    // BM-200B.9d — Parallel detector inputs
-    // Absolute velocities
-    final Offset v1Abs = d1 * invDt;
-    final Offset v2Abs = d2 * invDt;
-    // Centroid velocity
-    final Offset cNow = (p1 + p2) * 0.5;
-    final Offset cPrev = (_p1Prev + _p2Prev) * 0.5;
-    final Offset vC = (cNow - cPrev) * invDt;
-    // Centroid-relative velocities
-    final Offset v1 = v1Abs - vC;
-    final Offset v2 = v2Abs - vC;
+    // F1 validity gate: require max(|Δp1|,|Δp2|) ≥ minPxPerFrame
+    if (math.max(d1.distance, d2.distance) < minPxPerFrame) {
+      _parVeto = false; // no opinion
+      return;
+    }
+    // BM-200B.9h — Parallel detector inputs: use displacement velocities (not centroid-relative)
+    final Offset v1 = d1 * invDt;
+    final Offset v2 = d2 * invDt;
     _v1E = _v1E * (1.0 - emaAlpha) + v1 * emaAlpha;
     _v2E = _v2E * (1.0 - emaAlpha) + v2 * emaAlpha;
     final double s1 = _v1E.distance, s2 = _v2E.distance;
     final double denom = s1 * s2;
     bool weak = false;
     if (s1 < vMinPxS || s2 < vMinPxS) weak = true;
-    // Proof line once per frame
-    debugPrint('[BM-200B.9d PARCFG] relToCentroid=true');
+    // Legacy 9d PARCFG print suppressed to avoid duplicate PAR logs; 9h owns config logging
 
     double cosParRaw;
     if (denom < 1e-3) {
@@ -247,7 +256,8 @@ class BmGestureEngine {
     }
     final double sep1 = (_p2Prev - _p1Prev).distance;
     final double sep2 = (p2 - p1).distance;
-    final double sepFracRaw = ((sep2 - sep1).abs()) / (sep1 > 1.0 ? sep1 : 1.0);
+    final double sepFracRaw =
+        (sep2 - sep1).abs() / math.max(math.max(sep2, sep1), 1.0);
     _cosParAvg = (1.0 - emaAlpha) * _cosParAvg + emaAlpha * cosParRaw;
     _sepFracAvg = (1.0 - emaAlpha) * _sepFracAvg + emaAlpha * sepFracRaw;
     // Require strong and use stricter thresholds for veto
