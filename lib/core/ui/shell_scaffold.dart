@@ -3,7 +3,7 @@ import '../../l10n/app_localizations.dart';
 // import '../vocab/vocab_repo.dart';
 // current_property and properties_screen now handled via Line2PropertyChip and picker
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../modules/map/map_view.dart';
+import '../../modules/map/map_view_root.dart';
 import '../services/gps_service.dart';
 import '../../modules/shell/line2_property_chip.dart';
 import '../../modules/shared/bottom_plus_menu.dart';
@@ -169,7 +169,7 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
       body: TabBarView(
         controller: _tabs,
         children: [
-          const MapViewScreen(),
+          const MapViewRoot(useBranchB: true),
           Consumer(
             builder: (_, ref, __) {
               final active = ref.watch(activePropertyProvider).asData?.value;

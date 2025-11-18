@@ -16,7 +16,7 @@ import 'transform_model.dart';
 ///   painting (MapPainter + overlays) in a neutral/home transform.
 /// - Branch B does NOT mutate TransformModel; PhotoView drives its own state.
 class MapViewRoot extends ConsumerWidget {
-  const MapViewRoot({super.key, this.useBranchB = false});
+  const MapViewRoot({super.key, this.useBranchB = true});
   final bool useBranchB; // flip to true to try PhotoView branch
 
   @override
@@ -24,6 +24,7 @@ class MapViewRoot extends ConsumerWidget {
     if (!useBranchB) {
       return const MapViewScreen();
     }
+    debugPrint('[PV] BranchBMapView ACTIVE');
 
     // Branch B content builder: this should replicate what MapViewScreen paints
     // WITHOUT reading gesture transforms from the SM/TransformModel. For now, we
