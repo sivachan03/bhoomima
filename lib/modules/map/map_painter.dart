@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'dart:math' as math;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/services/gps_service.dart';
 import '../../core/services/projection_service.dart';
@@ -7,28 +6,23 @@ import '../filter/global_filter.dart';
 import 'map_filtering.dart';
 import '../../core/models/point_group.dart';
 import '../../core/models/point.dart';
+import 'transform_model.dart';
 
 class MapPainter extends CustomPainter {
   MapPainter({
     required this.projection,
-    required this.pan,
-    required this.scale,
-    required this.rotation,
     required this.borderGroups,
     required this.partitionGroups,
     required this.borderPointsByGroup,
     required this.partitionPointsByGroup,
     required this.ref,
     required this.gps,
+    required this.xform,
     this.showPointLabels = false,
     this.splitRingAWorld,
     this.splitRingBWorld,
-    this.matrix,
   });
   final ProjectionService projection;
-  final Offset pan;
-  final double scale;
-  final double rotation;
   final List<PointGroup> borderGroups;
   final List<PointGroup> partitionGroups;
   final Map<int, List<Point>> borderPointsByGroup;
@@ -39,8 +33,7 @@ class MapPainter extends CustomPainter {
   // Optional split preview rings (world coordinates)
   final List<Offset>? splitRingAWorld;
   final List<Offset>? splitRingBWorld;
-  // Optional precomposed view matrix (world->screen). If provided, painter will use it.
-  final Matrix4? matrix;
+  final TransformModel xform; // transform model with tx,ty,scale,rotRad
 
   // Debug helpers (one-time logging during a session)
   static bool _loggedCountsOnce = false;
@@ -51,23 +44,13 @@ class MapPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     canvas.save();
     final filter = ref.read(globalFilterProvider);
-    double effectiveScale = scale;
-    double effectiveRotation = rotation;
-    if (matrix != null) {
-      // Apply provided matrix and derive effective scale/rotation for debug and strokes
-      final m = matrix!;
-      canvas.transform(m.storage);
-      // 2x2 submatrix columns [m00 m01; m10 m11]
-      final s = m.storage;
-      final m00 = s[0], m10 = s[1];
-      effectiveScale = math.sqrt(m00 * m00 + m10 * m10);
-      effectiveRotation = math.atan2(m10, m00);
-    } else {
-      final center = size.center(Offset.zero);
-      canvas.translate(center.dx + pan.dx, center.dy + pan.dy);
-      canvas.rotate(rotation);
-      canvas.scale(scale);
-    }
+    final m = xform;
+    // Apply xform as screen = T(tx,ty) * R(rot) * S(scale) * world
+    canvas.translate(m.tx, m.ty);
+    canvas.rotate(m.rotRad);
+    canvas.scale(m.scale);
+    final double effectiveScale = m.scale;
+    final double effectiveRotation = m.rotRad;
 
     // DEBUG: show rotation axis so we can see rotation working
     final axis = Paint()
@@ -77,18 +60,11 @@ class MapPainter extends CustomPainter {
     canvas.drawLine(const Offset(-40, 0), const Offset(40, 0), axis);
     canvas.drawLine(const Offset(0, -40), const Offset(0, 40), axis);
 
-    // Log the angle that painter received (temporary)
-    // Logs to correlate gesture vs paint
-    debugPrint(
-      '[BM-178 r4] PAINT ROT='
-      '${effectiveRotation.toStringAsFixed(3)} '
-      'scale=${effectiveScale.toStringAsFixed(2)} '
-      'pan=(${pan.dx.toStringAsFixed(1)},${pan.dy.toStringAsFixed(1)})',
-    );
+    // BM-190: authoritative paint log from xform only
     debugPrint(
       '[BM-190] PAINT rot=${effectiveRotation.toStringAsFixed(3)} '
       'scale=${effectiveScale.toStringAsFixed(2)} '
-      'pan=(${pan.dx.toStringAsFixed(1)},${pan.dy.toStringAsFixed(1)})',
+      'pan=(${m.tx.toStringAsFixed(1)},${m.ty.toStringAsFixed(1)})',
     );
 
     // Quick verification logs (one-time): groups and total points
@@ -252,7 +228,7 @@ class MapPainter extends CustomPainter {
         ..color = const Color(0x552196F3);
       final pStroke = Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5 / scale
+        ..strokeWidth = 1.5 / effectiveScale
         ..color = const Color(0xFF2196F3);
 
       final path1 = pathFromRing(splitRingAWorld!);
@@ -276,7 +252,7 @@ class MapPainter extends CustomPainter {
       final accPaint = Paint()..color = Colors.blue.withValues(alpha: 0.15);
       final dot = Paint()..color = Colors.blue;
       canvas.drawCircle(xy, acc, accPaint);
-      canvas.drawCircle(xy, 3.0 / scale, dot);
+      canvas.drawCircle(xy, 3.0 / effectiveScale, dot);
     }
 
     // Draw points (borders and partitions) as small dots; labels optional
@@ -308,7 +284,7 @@ class MapPainter extends CustomPainter {
           continue;
         }
         final xy = projection.project(p.lat, p.lon);
-        canvas.drawCircle(xy, 2.5 / scale, pointPaint);
+        canvas.drawCircle(xy, 2.5 / effectiveScale, pointPaint);
         if (showPointLabels) {
           final label = (p.name.isNotEmpty) ? p.name : idx.toString();
           tp.text = TextSpan(
@@ -333,9 +309,11 @@ class MapPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant MapPainter old) {
-    return pan != old.pan ||
-        scale != old.scale ||
-        rotation != old.rotation ||
+    // Repaint when transform values or data/flags differ.
+    return xform.tx != old.xform.tx ||
+        xform.ty != old.xform.ty ||
+        xform.scale != old.xform.scale ||
+        xform.rotRad != old.xform.rotRad ||
         borderGroups != old.borderGroups ||
         partitionGroups != old.partitionGroups ||
         borderPointsByGroup != old.borderPointsByGroup ||

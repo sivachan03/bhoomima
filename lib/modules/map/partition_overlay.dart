@@ -29,51 +29,52 @@ class PartitionOverlay extends ConsumerWidget {
       builder: (_, snap) {
         if (!snap.hasData) return const SizedBox.shrink();
         final shapes = snap.data!;
-        return ClipRect(
-          child: Stack(
-            children: [
-              // Painter
-              RepaintBoundary(
-                child: CustomPaint(
-                  painter: _PartitionPainter(shapes: shapes, project: project),
-                  size: Size.infinite,
-                ),
+        // IMPORTANT: No pre-transform clipping here; the parent applies a world->screen
+        // transform. Clipping before the transform causes rotated/scaled content to be
+        // cropped along the viewport axes ("two sides disappear").
+        return Stack(
+          children: [
+            // Painter
+            RepaintBoundary(
+              child: CustomPaint(
+                painter: _PartitionPainter(shapes: shapes, project: project),
+                size: Size.infinite,
               ),
-              // Labels (only when filter includes partitions)
-              if (labelsOn) ...[
-                for (final s in shapes)
-                  Positioned(
-                    left: s.centroid.dx - 40,
-                    top: s.centroid.dy - 10,
-                    width: 80,
-                    height: 20,
-                    child: IgnorePointer(
-                      ignoring: true,
-                      child: Container(
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.35),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          s.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                          ),
+            ),
+            // Labels (only when filter includes partitions)
+            if (labelsOn) ...[
+              for (final s in shapes)
+                Positioned(
+                  left: s.centroid.dx - 40,
+                  top: s.centroid.dy - 10,
+                  width: 80,
+                  height: 20,
+                  child: IgnorePointer(
+                    ignoring: true,
+                    child: Container(
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.35),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        s.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),
                   ),
-              ],
-              // Legend (toggle)
-              if (legendVisible)
-                Positioned(right: 8, top: 8, child: _Legend(shapes: shapes)),
+                ),
             ],
-          ),
+            // Legend (toggle)
+            if (legendVisible)
+              Positioned(right: 8, top: 8, child: _Legend(shapes: shapes)),
+          ],
         );
       },
     );

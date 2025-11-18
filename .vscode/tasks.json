@@ -2,6 +2,24 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
+			"label": "Replay: rotate_fail",
+			"type": "shell",
+			"command": "./scripts/run_replay.sh sample_logs/rotate_fail.log",
+			"problemMatcher": []
+		},
+		{
+			"label": "Replay: zoom_vanish",
+			"type": "shell",
+			"command": "./scripts/run_replay.sh sample_logs/zoom_vanish.log",
+			"problemMatcher": []
+		},
+		{
+			"label": "Replay: pan_freeze",
+			"type": "shell",
+			"command": "./scripts/run_replay.sh sample_logs/pan_freeze.log",
+			"problemMatcher": []
+		},
+		{
 			"label": "Get packages and build codegen",
 			"type": "shell",
 			"command": "powershell",
@@ -25,6 +43,45 @@
 				"$dart-build_runner"
 			],
 			"group": "build"
+		},
+		{
+			"label": "Replay PS: rotate_fail",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"scripts/run_replay.ps1",
+				"sample_logs/rotate_fail.log"
+			]
+		},
+		{
+			"label": "Replay PS: pan_freeze",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"scripts/run_replay.ps1",
+				"sample_logs/pan_freeze.log"
+			]
+		},
+		{
+			"label": "Replay PS: zoom_vanish",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"scripts/run_replay.ps1",
+				"sample_logs/zoom_vanish.log"
+			]
 		}
 	]
 }

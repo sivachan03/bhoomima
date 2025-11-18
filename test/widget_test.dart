@@ -13,7 +13,18 @@ import 'package:bhoomima/app.dart';
 void main() {
   testWidgets('App builds smoke test', (WidgetTester tester) async {
     // Pump the app wrapped in ProviderScope (Riverpod root).
-    await tester.pumpWidget(const ProviderScope(child: BhoomiMaApp()));
+    await tester.pumpWidget(
+      ProviderScope(
+        child: BhoomiMaApp(
+          boot: (ref) async {
+            // No-op boot in tests to avoid pending timers/IO from services.
+          },
+        ),
+      ),
+    );
+
+    // Allow async boot (FutureBuilder) and any zero-duration timers to complete.
+    await tester.pumpAndSettle();
 
     // Initial frame should render a MaterialApp (possibly showing a loader).
     expect(find.byType(MaterialApp), findsOneWidget);

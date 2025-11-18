@@ -1,0 +1,64 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Flutter",
+      "type": "dart",
+      "request": "launch",
+      "program": "lib/main.dart",
+      "flutterMode": "release"
+    },
+    {
+      "name": "Flutter",
+      "type": "dart",
+      "request": "launch",
+      "program": "lib/main.dart",
+      "flutterMode": "profile"
+    },
+    {
+      "name": "Flutter: Run all Tests",
+      "type": "dart",
+      "request": "launch",
+      "program": "./test/"
+    },
+    {
+      "name": "Flutter",
+      "type": "dart",
+      "request": "launch",
+      "program": "lib/main.dart"
+    },
+    {
+      "name": "Flutter: Attach to Device",
+      "type": "dart",
+      "request": "attach"
+    },
+    {
+      "name": "Dart: Run all Tests",
+      "type": "dart",
+      "request": "launch",
+      "program": "./test/"
+    },
+    {
+      "name": "Dart",
+      "type": "dart",
+      "request": "launch",
+      "program": "bin/main.dart"
+    },
+    {
+      "name": "Dart: Attach to Process",
+      "type": "dart",
+      "request": "attach"
+    },
+    		{
+      "name": "Replay rotate_fail",
+      "request": "launch",
+      "type": "dart",
+      "program": "tool/golden_replay.dart",
+      "args": [
+        "sample_logs/rotate_fail.log",
+        "-v"
+      ]
+    }
+
+  ]
+}

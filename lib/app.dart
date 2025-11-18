@@ -9,17 +9,23 @@ import 'modules/filter/filter_persistence.dart';
 import 'modules/properties/property_create_screen.dart';
 import 'modules/properties/properties_screen.dart';
 import 'modules/map/farm_map_view.dart';
+import 'modules/map/bm_200r_demo_view.dart';
+import 'modules/map/bm_200r_map_screen.dart';
 
 class BhoomiMaApp extends ConsumerWidget {
-  const BhoomiMaApp({super.key});
+  // Optional boot override for tests to avoid starting background timers/IO.
+  final Future<void> Function(WidgetRef ref)? boot;
+  const BhoomiMaApp({super.key, this.boot});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     // Boot sequence: ensure default property + load persisted filters
-    final boot = Future<void>(() async {
-      await ensureDefaultProperty(ref);
-      await ref.read(filterPersistence).load();
-    });
+    final boot = this.boot != null
+        ? this.boot!(ref)
+        : Future<void>(() async {
+            await ensureDefaultProperty(ref);
+            await ref.read(filterPersistence).load();
+          });
     return FutureBuilder<void>(
       future: boot,
       builder: (ctx, snap) {
@@ -37,6 +43,10 @@ class BhoomiMaApp extends ConsumerWidget {
             '/properties': (ctx) => const PropertiesScreen(),
             // Developer route to test MatrixGestureDetector-based sample view
             '/dev/farm': (ctx) => const FarmMapView(),
+            // BM-200R: simplified 2-finger pan+zoom layer demo
+            '/dev/bm200r': (ctx) => const BM200RDemoView(),
+            // BM-200R: integrated with stub farm painter
+            '/dev/bm200r/map': (ctx) => const BM200RMapScreen(),
           },
           localizationsDelegates: const [
             AppLocalizations.delegate,

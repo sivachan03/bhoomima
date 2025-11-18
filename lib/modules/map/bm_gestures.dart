@@ -17,29 +17,14 @@ class BmGestureEngine {
   static const double zoomHys = 0.06; // |log| (accum window)
   static const double minRotRate = 0.35; // rad/s
   static const double minZoomRate = 0.30; // |log|/s
-  // BM-200B.8 parallel veto
-  static const double vMinPxS = 20.0;
-  static const double emaAlpha = 0.30;
-  static const double cosParThresh = 0.995; // BM-200B.9d stricter
-  static const double sepFracThresh = 0.010; // BM-200B.9d tiny squeeze allowed
-  static const double minPxPerFrame =
-      1.5; // F1: per-frame displacement strong gate
+  // BM-200B.8 parallel veto handled by ParallelPanVeto (9h)
 
   // State
   Matrix4 M = Matrix4.identity();
   Offset? aWorldLock; // world pivot when locked
   Offset? aScreenLock; // screen at lock time (diagnostics)
-  int _gateOnSinceMs = -1;
-  bool? _gateRotate;
   double rotAccum = 0.0, zoomAccum = 0.0;
   final List<_Win> _win = <_Win>[];
-  // Parallel veto EMA
-  double _cosParAvg = 0.0, _sepFracAvg = 0.0;
-  Offset _v1E = Offset.zero, _v2E = Offset.zero;
-  bool _pvHavePrev = false;
-  Offset _p1Prev = Offset.zero, _p2Prev = Offset.zero;
-  double _tPrevMs = 0.0;
-  bool _parVeto = false;
   // Last small deltas
   double _dTheta = 0.0, _dScale = 1.0;
   Offset _panDelta = Offset.zero;
@@ -60,17 +45,6 @@ class BmGestureEngine {
     debugPrint('[BM-199 IDLOCK begin: A=$_touchIdA B=$_touchIdB]');
     _win.clear();
     rotAccum = zoomAccum = 0.0;
-    _gateOnSinceMs = -1;
-    _gateRotate = null;
-    _cosParAvg = 0.0;
-    _sepFracAvg = 0.0;
-    _v1E = Offset.zero;
-    _v2E = Offset.zero;
-    _pvHavePrev = false;
-    _p1Prev = p1;
-    _p2Prev = p2;
-    _tPrevMs = tMs.toDouble();
-    _parVeto = false;
     _locked = false;
     aWorldLock = null;
     aScreenLock = null;
@@ -121,10 +95,11 @@ class BmGestureEngine {
       _dTheta = 0.0;
       _dScale = 0.0;
       // Pan by centroid delta if needed
-      if (debugLogging)
+      if (debugLogging) {
         debugPrint(
           '[FREEZE] active t=${_parState.freezeAgeMs}ms parVeto=$parVeto → suppress {Apply, Locks}',
         );
+      }
     } else if (parVeto) {
       _dTheta = 0.0;
       _dScale = 0.0;
@@ -159,11 +134,11 @@ class BmGestureEngine {
     }
     if (_locked && aWorldLock != null) {
       final ax = aWorldLock!.dx, ay = aWorldLock!.dy;
-      final Matrix4 TposLocal = Matrix4.identity()..translate(ax, ay);
-      final Matrix4 TnegLocal = Matrix4.identity()..translate(-ax, -ay);
+      final Matrix4 tPosLocal = Matrix4.identity()..translate(ax, ay);
+      final Matrix4 tNegLocal = Matrix4.identity()..translate(-ax, -ay);
       final Matrix4 R = Matrix4.identity()..rotateZ(dTheta);
       final Matrix4 S = Matrix4.identity()..scale(dScale);
-      final Matrix4 G = TposLocal * R * S * TnegLocal;
+      final Matrix4 G = tPosLocal * R * S * tNegLocal;
       M = M * G;
     }
     if (_panDelta != Offset.zero) {
@@ -210,62 +185,6 @@ class BmGestureEngine {
   double _scaleFrom(Matrix4 sm) {
     final double sx = sm.entry(0, 0);
     return sx == 0.0 ? 1.0 : sx;
-  }
-
-  void _updateParallelVeto(Offset p1, Offset p2, double tNowMs) {
-    if (!_pvHavePrev) {
-      _pvHavePrev = true;
-      _p1Prev = p1;
-      _p2Prev = p2;
-      _tPrevMs = tNowMs;
-      _cosParAvg = 0.0;
-      _sepFracAvg = 0.0;
-      _v1E = Offset.zero;
-      _v2E = Offset.zero;
-      _parVeto = false;
-      return;
-    }
-    double dt = (tNowMs - _tPrevMs).abs();
-    if (dt < 1.0) dt = 1.0;
-    if (dt > 100.0) dt = 100.0;
-    final double invDt = 1000.0 / dt;
-    final Offset d1 = p1 - _p1Prev;
-    final Offset d2 = p2 - _p2Prev;
-    // F1 validity gate: require max(|Δp1|,|Δp2|) ≥ minPxPerFrame
-    if (math.max(d1.distance, d2.distance) < minPxPerFrame) {
-      _parVeto = false; // no opinion
-      return;
-    }
-    // BM-200B.9h — Parallel detector inputs: use displacement velocities (not centroid-relative)
-    final Offset v1 = d1 * invDt;
-    final Offset v2 = d2 * invDt;
-    _v1E = _v1E * (1.0 - emaAlpha) + v1 * emaAlpha;
-    _v2E = _v2E * (1.0 - emaAlpha) + v2 * emaAlpha;
-    final double s1 = _v1E.distance, s2 = _v2E.distance;
-    final double denom = s1 * s2;
-    bool weak = false;
-    if (s1 < vMinPxS || s2 < vMinPxS) weak = true;
-    // Legacy 9d PARCFG print suppressed to avoid duplicate PAR logs; 9h owns config logging
-
-    double cosParRaw;
-    if (denom < 1e-3) {
-      cosParRaw = 0.0;
-    } else {
-      final double dot = _v1E.dx * _v2E.dx + _v1E.dy * _v2E.dy;
-      cosParRaw = (dot / denom).clamp(-1.0, 1.0);
-    }
-    final double sep1 = (_p2Prev - _p1Prev).distance;
-    final double sep2 = (p2 - p1).distance;
-    final double sepFracRaw =
-        (sep2 - sep1).abs() / math.max(math.max(sep2, sep1), 1.0);
-    _cosParAvg = (1.0 - emaAlpha) * _cosParAvg + emaAlpha * cosParRaw;
-    _sepFracAvg = (1.0 - emaAlpha) * _sepFracAvg + emaAlpha * sepFracRaw;
-    // Require strong and use stricter thresholds for veto
-    _parVeto =
-        !weak && (_cosParAvg >= cosParThresh) && (_sepFracAvg <= sepFracThresh);
-    _p1Prev = p1;
-    _p2Prev = p2;
-    _tPrevMs = tNowMs;
   }
 }
 

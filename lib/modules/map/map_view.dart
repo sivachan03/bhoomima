@@ -1,5 +1,7 @@
+// ignore_for_file: unused_field, unused_local_variable, unused_element
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'dart:collection';
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app_state/active_property.dart';
@@ -14,6 +16,8 @@ import 'map_view_controller.dart';
 import 'map_points_aggregate.dart';
 import '../../core/models/point_group.dart';
 import 'dart:math' as math;
+import 'par_ema.dart';
+import 'par_state.dart';
 import '../points/two_tap_picker.dart';
 import '../partition/split_partition_controller.dart';
 import '../../core/repos/partition_ops.dart';
@@ -22,6 +26,72 @@ import 'bm_gestures.dart';
 import 'parallel_pan_veto.dart';
 import 'two_finger_sampler.dart';
 import 'two_point_partition.dart';
+import 'sim_transform_gesture.dart';
+// State machine integration (proof-of-use heartbeat)
+import '../../gesture_state_machine.dart' as sm;
+import 'transform_model.dart';
+
+// BM-200R3.2: Very gentle pan + clamp. Lower further to 0.5 if still fast.
+const double kPanGain = 1.0; // world pan gain applied to screen delta / scale
+
+// Freeze gate cause (top-level per Dart rules)
+enum FreezeCause { none, twoDownChange, lifecycle }
+
+// Simple value class replacing the (Offset, Offset) record previously used for
+// debug cut line representation to satisfy older analyzer versions.
+class CutLine {
+  final Offset a;
+  final Offset b;
+  const CutLine(this.a, this.b);
+}
+
+// Apply delta container (pan-only zeroes zoom/rotate components)
+class _ApplyDeltas {
+  final double dLog; // ln(scale multiplier)
+  final double dTheta; // radians
+  final Offset pan; // translation in screen-space (already scaled)
+  const _ApplyDeltas(this.dLog, this.dTheta, this.pan);
+}
+
+// EMA + hysteresis latch for Zoom/Rotate readiness based on cosPar & sep fraction
+class _ZrLatch {
+  double pE = 0.0, apE = 0.0, orthoE = 0.0;
+  bool zoomReady = false, rotateReady = false;
+  void reset() {
+    pE = apE = orthoE = 0.0;
+    zoomReady = rotateReady = false;
+  }
+
+  void feed(double cosPar, double sepFrac, {double alpha = 0.25}) {
+    final double p = (cosPar + 1.0) * 0.5;
+    final double ap = (1.0 - cosPar) * 0.5;
+    final double ortho = 1.0 - cosPar.abs();
+    pE += (p - pE) * alpha;
+    apE += (ap - apE) * alpha;
+    orthoE += (ortho - orthoE) * alpha;
+    final bool bigEnough = sepFrac >= 0.04; // ~4% of min(viewW,viewH)
+    // Zoom latch hysteresis (enter 0.35, exit 0.25)
+    if (!zoomReady) {
+      zoomReady = bigEnough && apE >= 0.35; // enter
+    } else {
+      zoomReady = bigEnough && apE >= 0.25; // exit
+    }
+    // Rotate latch hysteresis (enter 0.40, exit 0.30)
+    if (!rotateReady) {
+      rotateReady = bigEnough && orthoE >= 0.40;
+    } else {
+      rotateReady = bigEnough && orthoE >= 0.30;
+    }
+  }
+}
+
+// G0: Pan delta node for per-gesture queueing
+class PanDelta {
+  final int gid; // gestureId at enqueue time
+  final int seq; // strictly increasing per gesture
+  final Offset dP; // screen-space delta
+  PanDelta(this.gid, this.seq, this.dP);
+}
 
 // ========================= Tunables (BM-194/195) =========================
 // Central place for all gesture & logging tuning knobs. Screenshot/share this
@@ -121,7 +191,7 @@ class BM199Params {
     this.cooldownMs = 240,
     this.vetoWindowMs = 120,
     this.kDominance = 1.30,
-    this.panParallelCosMin = 0.95,
+    this.panParallelCosMin = 0.90,
     this.maxSepFracChange = 0.05,
     this.residualFracMax = 0.12,
     this.mMin = 0.10,
@@ -129,6 +199,38 @@ class BM199Params {
     this.dThetaClamp = 0.12,
     this.minRotRate = 0.35,
     this.minZoomRate = 0.30,
+  });
+}
+
+// Gate → BM-199 pass-through container (single source of truth from PARGATE)
+class GateDecision {
+  final String mode; // 'pan' | 'zoom' | 'rotate' | 'zr'
+  final bool veto;
+  final bool zoomReady;
+  final bool rotateReady;
+  final double dLogLP;
+  final double dThetaLP;
+  final Offset centroidW; // world-space pivot
+
+  const GateDecision({
+    required this.mode,
+    required this.veto,
+    required this.zoomReady,
+    required this.rotateReady,
+    required this.dLogLP,
+    required this.dThetaLP,
+    required this.centroidW,
+  });
+}
+
+class BM199Telemetry {
+  final String mode; // echo of gate.mode
+  final bool zoomOk; // mirrors gate.zoomReady
+  final bool rotateOk; // mirrors gate.rotateReady
+  const BM199Telemetry({
+    required this.mode,
+    required this.zoomOk,
+    required this.rotateOk,
   });
 }
 
@@ -184,8 +286,32 @@ class BM199Gate {
   final BM199Params p;
   final _BM199Window _w;
   double? _prevSep;
+  int? _lastNowMs; // for per-frame rate logging
 
   BM199Gate(this.p) : _w = _BM199Window(p.windowMs);
+
+  // Passive telemetry: logs candidate & rates each frame; never alters decisions
+  BM199Telemetry telemetry(
+    GateDecision gate, {
+    bool freeze = false,
+    int? nowMs,
+  }) {
+    double zoomRate = 0.0, rotRate = 0.0;
+    if (nowMs != null && _lastNowMs != null) {
+      final dt = (nowMs - _lastNowMs!).toDouble() / 1000.0;
+      if (dt > 0) {
+        zoomRate = gate.dLogLP.abs() / dt;
+        rotRate = gate.dThetaLP.abs() / dt;
+      }
+    }
+    if (nowMs != null) _lastNowMs = nowMs;
+    final bool zoomOk = gate.zoomReady && zoomRate > 0.02;
+    final bool rotateOk = gate.rotateReady && rotRate > 0.5;
+    debugPrint(
+      '[BM-199] mode=${gate.mode} zoomOk=$zoomOk rotateOk=$rotateOk veto=${gate.veto} freeze=$freeze zoomRate=${zoomRate.toStringAsFixed(3)} rotRate=${rotRate.toStringAsFixed(3)}',
+    );
+    return BM199Telemetry(mode: gate.mode, zoomOk: zoomOk, rotateOk: rotateOk);
+  }
 
   void reset() {
     _w.reset();
@@ -319,6 +445,9 @@ class BM199Gate {
 
 enum TwoFingerMode { undecided, rotate, zoom }
 
+// Winner-takes-all gating enum used for consistent veto
+enum GMode { pan, zoom, rotate }
+
 class MapViewScreen extends ConsumerStatefulWidget {
   const MapViewScreen({super.key});
   @override
@@ -326,7 +455,286 @@ class MapViewScreen extends ConsumerStatefulWidget {
 }
 
 class _MapViewScreenState extends ConsumerState<MapViewScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+  // Simple gesture pipeline feature flag (post-BM-200 experimentation)
+  // Enabled: bypass legacy PARGATE/SM/READY logic for two-finger input.
+  static const bool kUseSimGesture =
+      true; // set false to revert to legacy pipeline
+  // Simplified detector instance: rotation HARD-OFF (button-only rotation policy).
+  // To reintroduce gesture rotation later, replace this with enableRotation:true and add applyRotate back.
+  // Future toggle: when true AND sim rotation enabled, allow gesture rotation.
+  static const bool kEnableSimRotateLater = false; // keep false for shipping
+  // BM-200R3.0: pan-only SIM; no gesture zoom/rotate.
+  final SimTransformGesture _sim = SimTransformGesture();
+  // Zoom edge disappearance note (v1 expected behavior):
+  // At higher scales (≈3.5–4.0 and above), the viewport cannot contain the full
+  // farm/world bounds simultaneously. Our pan clamp keeps some portion visible,
+  // so naturally two sides "disappear" (move out of view) as you zoom in.
+  // This is NOT a geometry bug—it's the consequence of limited viewport size.
+  // Future refinements after pan+zoom feel solid:
+  //  - Use the gesture focal point as the zoom pivot instead of viewport center
+  //    to reduce the apparent drift and keep the farmer's area of interest
+  //    anchored.
+  //  - Potentially loosen or soften clamp behavior (e.g., allow slight overscroll
+  //    or implement elastic edges) so the transform doesn't over-snap when near
+  //    bounds.
+  //  - Consider adaptive scaling limits per property size.
+  // For v1: treat the disappearance of opposite edges at high zoom as expected.
+
+  // R.12a: Disable legacy writes; SM is single source of truth for apply
+  // BM-200R2.2: legacy XFORM zoom/rotate fully disabled (single engine = SIM + button rotates).
+  static const bool legacyApplyEnabled =
+      false; // kept for reference; not used now.
+  // Ensure global flag also off.
+  // Flag init moved to initState.
+  // Long-lived gesture state machine instance with no-op apply hooks (we already apply elsewhere).
+  // This now drives the single-source transform model.
+  final TransformModel _xform = TransformModel(
+    suppressLogs: _MapViewScreenState.kUseSimGesture,
+  );
+  // --- Simplified gesture helper methods (SIM path) ---
+  // Axis-aligned clamp ignoring rotation to keep map on-screen with a margin.
+  void _clampAxisAligned({double margin = 32.0}) {
+    if (_worldBounds == null || _lastPaintSize == Size.zero) return;
+
+    // World bounds in map space and current scale.
+    final Rect bounds = _worldBounds!;
+    final double S = _xform.scale;
+
+    // Map rect in screen space after transform (ignoring rotation).
+    final Rect mapScreenRect = Rect.fromLTWH(
+      bounds.left * S + _xform.tx,
+      bounds.top * S + _xform.ty,
+      bounds.width * S,
+      bounds.height * S,
+    );
+
+    // Viewport size available from last paint.
+    final Size viewportSize = _lastPaintSize;
+
+    double tx = _xform.tx;
+    double ty = _xform.ty;
+
+    if (mapScreenRect.right < margin) {
+      tx += (margin - mapScreenRect.right);
+    }
+    if (mapScreenRect.left > viewportSize.width - margin) {
+      tx -= (mapScreenRect.left - (viewportSize.width - margin));
+    }
+    if (mapScreenRect.bottom < margin) {
+      ty += (margin - mapScreenRect.bottom);
+    }
+    if (mapScreenRect.top > viewportSize.height - margin) {
+      ty -= (mapScreenRect.top - (viewportSize.height - margin));
+    }
+
+    _xform.tx = tx;
+    _xform.ty = ty;
+  }
+
+  // BM-200R2.2: Single apply for SIM updates. Ignores gesture rotation.
+  void _applySimGesture(SimGestureUpdate u) {
+    if (u.panDeltaPx == Offset.zero) return;
+    if (_worldBounds == null || _xform.viewportSize == Size.zero) return;
+
+    final Rect worldBounds = _worldBounds!;
+    final Size view = _xform.viewportSize;
+
+    // 1) PAN in world units, with small gain so it can't "fly away".
+    final double dxWorld = (u.panDeltaPx.dx * kPanGain) / _xform.scale;
+    final double dyWorld = (u.panDeltaPx.dy * kPanGain) / _xform.scale;
+    _xform.applyPan(dxWorld, dyWorld);
+
+    // 2) Clamp so at least some part of the farm stays visible.
+    _xform.clampPan(worldBounds: worldBounds, view: view);
+
+    debugPrint(
+      '[APPLY] sim pan Δpx=(${u.panDeltaPx.dx.toStringAsFixed(2)},${u.panDeltaPx.dy.toStringAsFixed(2)}) '
+      '→ T=(${_xform.tx.toStringAsFixed(1)},${_xform.ty.toStringAsFixed(1)}) '
+      'S=${_xform.scale.toStringAsFixed(2)}',
+    );
+  }
+
+  void _applyPanFromScreenDelta(Offset dPx) {
+    if (dPx == Offset.zero) return;
+    _xform.tx += dPx.dx;
+    _xform.ty += dPx.dy;
+    debugPrint(
+      '[APPLY] sim pan Δpx=(${dPx.dx.toStringAsFixed(2)},${dPx.dy.toStringAsFixed(2)}) → T=(${_xform.tx.toStringAsFixed(1)},${_xform.ty.toStringAsFixed(1)})',
+    );
+    // Clamp after pan if world bounds known
+    if (_worldBounds != null && _lastPaintSize != Size.zero) {
+      _xform.clampPan(worldBounds: _worldBounds!, view: _lastPaintSize);
+    }
+  }
+
+  void _applyZoomFactor(double factor) {
+    if (factor == 1.0) return; // no-op
+    final size = _lastPaintSize;
+    if (size == Size.zero) return; // cannot pivot yet
+    final center = size.center(Offset.zero);
+    final pivotW = screenToWorldXform(center, _xform);
+    final dLog = math.log(factor);
+    _xform.applyZoom(dLog, pivotW: pivotW, pivotS: center);
+    if (_worldBounds != null) {
+      _xform.clampPan(worldBounds: _worldBounds!, view: size);
+    }
+  }
+
+  void _applyRotationDelta(double dTheta) {
+    if (dTheta == 0.0) return;
+    final size = _lastPaintSize;
+    if (size == Size.zero) return;
+    // Buttons only: update theta via pivoted rotate; then clamp pan.
+    final center = size.center(Offset.zero);
+    final pivotW = screenToWorldXform(center, _xform);
+    _xform.applyRotate(dTheta, pivotW: pivotW, pivotS: center);
+    if (_worldBounds != null) {
+      _xform.clampPan(worldBounds: _worldBounds!, view: size);
+    }
+  }
+
+  // BM-200R3.0: Button zoom helper (log-scale step).
+  // Field edges "disappearing" note:
+  // At higher scales (≈3–4×), the world/farm spans more pixels than the viewport
+  // can show simultaneously. After a zoom, we clamp pan so some portion stays
+  // visible; naturally, opposite sides move out of view. This is expected for
+  // any zoom+clamp scheme and not a rendering bug. Future (post‑ship) ideas:
+  //  * Use last tap / gesture focal point as zoom pivot instead of viewport center.
+  //  * Loosen or soften clampPan (elastic margin / slight overscroll) to reduce
+  //    the feeling of snapping.
+  //  * Adaptive scale limits based on property size or screen class.
+  // For BM-200R3.x we keep it simple and predictable.
+  void _zoomByStep(double stepLogS) {
+    if (_worldBounds == null || _xform.viewportSize == Size.zero) return;
+    final Rect worldBounds = _worldBounds!;
+    final Size view = _xform.viewportSize;
+    final Offset pivotS = Offset(view.width / 2, view.height / 2);
+    final Offset pivotW = Offset(
+      (pivotS.dx - _xform.tx) / _xform.scale,
+      (pivotS.dy - _xform.ty) / _xform.scale,
+    );
+    _xform.applyZoom(stepLogS, pivotW: pivotW, pivotS: pivotS);
+    _xform.clampPan(worldBounds: worldBounds, view: view);
+    setState(() {});
+    debugPrint(
+      '[BTN] zoom step=${stepLogS.toStringAsFixed(3)} S=${_xform.scale.toStringAsFixed(3)}',
+    );
+  }
+
+  // Convenience degrees-based rotate wrapper for buttons.
+  void _rotateByDegrees(double dDeg) {
+    final double dTheta = dDeg * math.pi / 180.0;
+    _applyRotationDelta(dTheta);
+    setState(() {});
+    debugPrint(
+      '[BTN] rotate d=${dDeg.toStringAsFixed(1)}° rot=${_xform.rotRad.toStringAsFixed(3)}',
+    );
+  }
+
+  // BM-200R3.2: Home (fit-to-screen) safety net.
+  void _homeView() {
+    if (_worldBounds == null || _xform.viewportSize == Size.zero) return;
+    _xform.homeTo(
+      worldBounds: _worldBounds!,
+      view: _xform.viewportSize,
+      margin: 0.06,
+    );
+    setState(() {});
+    debugPrint(
+      '[BTN] home → scale=${_xform.scale.toStringAsFixed(3)} T=(${_xform.tx.toStringAsFixed(1)},${_xform.ty.toStringAsFixed(1)})',
+    );
+  }
+
+  // Rotation intentionally omitted in SIM path (button-only rotate policy).
+  // Pivot captured on SM mode enter (screen/world), reused until exit
+  Offset? _smPivotS;
+  Offset? _smPivotW;
+
+  late final sm.GestureStateMachine _sm = sm.GestureStateMachine.simple(
+    applyRotate: (double dTheta) {
+      // Reuse pivot captured on mode enter to avoid per-frame drift
+      final size = _lastPaintSize;
+      final Offset pivotS = _smPivotS ?? (size.center(Offset.zero));
+      final Offset pivotW = _smPivotW ?? screenToWorldXform(pivotS, _xform);
+      _xform.applyRotate(dTheta, pivotW: pivotW, pivotS: pivotS);
+      // Trigger repaint so painter reads updated SM transform
+      if (mounted) setState(() {});
+      debugPrint(
+        '[APPLY] mode=rotate dθ=${dTheta.toStringAsFixed(5)} → rot=${_xform.rotRad.toStringAsFixed(5)}',
+      );
+      // Anchor consistency probe (floating-point drift should be tiny)
+      assert(() {
+        final w = screenToWorldXform(pivotS, _xform);
+        final err = (w - pivotW).distance;
+        debugPrint(
+          '[ANCHOR] |world(pivotS) - pivotW| = ${err.toStringAsExponential(2)}',
+        );
+        return true;
+      }());
+    },
+    applyZoom: (double dLogS) {
+      final size = _lastPaintSize;
+      final Offset pivotS = _smPivotS ?? (size.center(Offset.zero));
+      final Offset pivotW = _smPivotW ?? screenToWorldXform(pivotS, _xform);
+      _xform.applyZoom(dLogS, pivotW: pivotW, pivotS: pivotS);
+      // Trigger repaint so painter reads updated SM transform
+      if (mounted) setState(() {});
+      assert(() {
+        final w = screenToWorldXform(pivotS, _xform);
+        final err = (w - pivotW).distance;
+        debugPrint(
+          '[ANCHOR] |world(pivotS) - pivotW| = ${err.toStringAsExponential(2)}',
+        );
+        return true;
+      }());
+      debugPrint(
+        '[APPLY] mode=zoom dLogS=${dLogS.toStringAsFixed(5)} → scale=${_xform.scale.toStringAsFixed(5)}',
+      );
+    },
+    applyPan: (dx, dy) {
+      // Pan is a pure screen-translation of T; must not touch scale/rot
+      final preScale = _xform.scale;
+      final preRot = _xform.rotRad;
+      _xform.applyPan(dx, dy);
+      // Trigger repaint so painter reads updated SM transform
+      if (mounted) setState(() {});
+      assert(() {
+        if (_xform.scale != preScale || _xform.rotRad != preRot) {
+          debugPrint('[SM] PAN invariant violated: scale/rot changed');
+        }
+        return true;
+      }());
+      debugPrint(
+        '[APPLY] mode=pan Δpx=(${dx.toStringAsFixed(2)},${dy.toStringAsFixed(2)}) → T=(${_xform.tx.toStringAsFixed(2)},${_xform.ty.toStringAsFixed(2)})',
+      );
+    },
+    startRotatePivot: () {
+      // Capture pivot on enter(rotate)
+      final size = _lastPaintSize;
+      final Offset ps = (_parCentroidNow ?? size.center(Offset.zero));
+      final Offset pw = screenToWorldXform(ps, _xform);
+      _smPivotS = ps;
+      _smPivotW = pw;
+      debugPrint(
+        '[SM] pivot(rotate) S=(${ps.dx.toStringAsFixed(1)},${ps.dy.toStringAsFixed(1)})',
+      );
+    },
+    startZoomPivot: () {
+      // Capture pivot on enter(zoom)
+      final size = _lastPaintSize;
+      final Offset ps = (_parCentroidNow ?? size.center(Offset.zero));
+      final Offset pw = screenToWorldXform(ps, _xform);
+      _smPivotS = ps;
+      _smPivotW = pw;
+      debugPrint(
+        '[SM] pivot(zoom) S=(${ps.dx.toStringAsFixed(1)},${ps.dy.toStringAsFixed(1)})',
+      );
+    },
+  );
+
+  // Shared minimum separation threshold (px) used across gate, veto, apply
+  static const double kParMinSepPx = 40.0;
   static const String _tag = '[BM-178 r4]';
   // (legacy debug toggles removed; using structured BM-194/195 logs instead)
 
@@ -354,10 +762,22 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
   Offset _pan = Offset.zero;
   double _scale = 1.0;
   double _rotation = 0.0;
+  // PAR centroid anchored apply state (BM-200B centroid sequence)
+  Offset?
+  _parCentroidPrev; // screen-space centroid previous frame (from sampler)
+  Offset? _parCentroidNow; // screen-space centroid current frame (from sampler)
+  // Feature flag to enable new unified centroid Z/R + residual pan application
+  static const bool kParCentroidApply = true;
   Size _lastPaintSize = Size.zero;
   double _startScale = 1.0;
   double _startRotation = 0.0;
   bool _didFit = false;
+  // World bounds inferred from data (set in _fitOnce)
+  Rect? _worldBounds;
+  // Pivot anchor in world space for zoom/rotate (low-pass updated)
+  Offset? _pivotWAnchor;
+  // Leash logging flag
+  bool _leashedLastFrame = false;
 
   // Gesture state
   bool _isGesturing = false;
@@ -387,6 +807,11 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
 
   // BM-195 session state
   int _gid = 0; // gesture id
+  bool _twoDown = false; // true while exactly two pointers are down
+  // Dropout grace to avoid gid churn on brief flickers
+  int _twoBelowSinceMs = -1; // ms when pointers dropped below 2; -1 = none
+  static const int _twoDropoutGraceMs =
+      60; // ms grace before ending gesture (pointer hygiene)
   DateTime _lockTime = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _lastEvidenceTime = DateTime.fromMillisecondsSinceEpoch(0);
   int _switches = 0;
@@ -408,133 +833,217 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
   int? _pairId1;
   int? _pairId2;
   final List<_VetoSample> _vetoBuf = <_VetoSample>[];
-  // Optional: new engine instance (not yet swapping core flow; staged wiring)
-  final BmGestureEngine _bmEngine = BmGestureEngine();
-  // BM-200B.8: Parallel veto via EMA velocities
-  static const double _parVMinPxS = 20.0; // px/s
-  static const double _parEmaAlpha = 0.30; // smoothing factor
-  static const double _parMinPxPerFrame = 1.5; // F1: validity gate (px)
-  static const double _parCosTh = 0.995; // BM-200B.9d stricter
-  static const double _parSepTh = 0.010; // BM-200B.9d tiny squeeze allowed
-  // BM-199 residual-based pan veto hysteresis
-  static const double _residVetoEnter = 0.12; // enter when residualFrac ≥ 0.12
-  static const double _residVetoExit = 0.08; // exit when residualFrac ≤ 0.08
-  double _cosParAvg = 0.0;
-  double _sepFracAvg = 0.0;
-  Offset _p1PrevForPar = Offset.zero, _p2PrevForPar = Offset.zero;
-  int _tPrevMs = -1;
-  bool _currentParVeto = false;
-  // BM-200B.9h guard: suppress dθ/dScale and locks for a short window after parallel entry
-  static const int _par9eEntryGuardMs = 100; // ms
-  int _par9eEntryMs = -1; // last 9h rising-edge timestamp (nowMsAll)
-  bool _par9ePrevVeto = false; // previous-frame 9h veto to detect rising edge
-  bool _par9eGuardActive =
-      false; // per-frame guard state derived from _par9eEntryMs
-  bool _freezePrevActive = false; // for [FREEZE] end logging
-  // BM-200B.9h: pre-veto shield before latch (cos>=0.95, validN<6)
-  bool _par9eShieldActive = false;
-  // BM-200B.9h: per-frame ordering guard to ensure PAR compute precedes APPLY/GATE
-  bool _par9eDidComputeThisFrame = false;
-  // BM-200B.9d diagnostic-only veto (centroid-relative EMA) — do not drive gating
-  bool _parVeto9d = false;
-  // Single-source state from 9h per frame
-  ParallelPanVetoState? _par9eState;
-  // 9h last-published invariants to assert single-source consumption in GATE
-  int _par9eLastGid = -1;
   int _par9eLastSeq = -1;
   int _par9eLastVer = -1;
   double _par9eLastCos = 0.0;
   double _par9eLastSep = 0.0;
   // Post office: defer concise APPLY print until after GATE per frame
-  bool _postApplyPending = false;
-  bool _postApplyPar = false;
-  double _postApplyDAngle = 0.0;
-  double _postApplyDScale = 0.0;
+  // Legacy post-apply flags removed (previous concise APPLY log deprecated).
+  // Removed legacy post-apply delta caches (_postApplyDAngle/_postApplyDScale)
+  // PAR feed log limiter per gesture
+  int _parFeedLogCount = 0;
+  static const double _twoPanEps = 0.25; // px; pre-ENQ deadband
+  static const double _applyPanEps = 0.75; // px; optional APPLY epsilon
+  // E) Rotation/Zoom readiness gate (needs consecutive valid samples)
+
+  // --- Missing private state (PAR 9h + readiness + smoothing + apply queue) ---
+  // Single-source PAR state for the current frame (nullable until first compute)
+  ParallelPanVetoState? _par9eState;
+  // 9d/9e helper EMA state (centroid-independent raw deltas)
+  int _tPrevMs = -1;
+  Offset _p1PrevForPar = Offset.zero;
+  Offset _p2PrevForPar = Offset.zero;
+  bool _currentParVeto = false; // authoritative from 9h state only
+  // 9h freeze-guard window and shield
+  bool _par9ePrevVeto = false; // retained for legacy logging of veto edges
+  FreezeCause _freezeCause = FreezeCause.none;
+  DateTime _freezeUntil = DateTime.fromMillisecondsSinceEpoch(0);
+  bool _gestureStable = false; // becomes true after first successful apply
+  void _setFreeze(FreezeCause cause, Duration dt) {
+    _freezeCause = cause;
+    _freezeUntil = DateTime.now().add(dt);
+    debugPrint(
+      '[FREEZE] start cause=${cause.name} dt=${dt.inMilliseconds}ms until=${_freezeUntil.toIso8601String()}',
+    );
+  }
+
+  bool get _freezeActive {
+    final active = DateTime.now().isBefore(_freezeUntil);
+    return active && !_gestureStable;
+  }
+
+  bool _par9eDidComputeThisFrame = false;
+  bool _par9eShieldActive = false;
+  int _par9eLastGid = -1;
+  // Readiness gate tracking
+  int _rdyConsec = 0;
+  bool _rotZoomReady = false;
+  // Per-gid EMA-based readiness latches (hysteresis)
+  bool _emaZoomReady = false;
+  bool _emaRotateReady = false;
+  final int _rdyConsecMin = 2; // consecutive ready frames
+  // Two-finger centroid EMA (micro-jitter suppression)
+  final double _twoPanK = 0.35; // 0..1 EMA gain
+  Offset? _cFilt;
+  Offset? _cLast;
+  // Residual-based veto thresholds (legacy constants kept for other paths)
+  final double _residVetoEnter = 0.12;
+  final double _residVetoExit = 0.08;
+  // Single consumer pan apply queue helpers
+  Offset _pendingPanDp = Offset.zero;
+  // Two-finger pan tracking (screen pixels)
+  Offset? _prevCpx; // previous two-finger centroid in screen px
+  Offset _panPxLP = Offset.zero; // low-pass pan
+  bool _freezePrev = false; // detect freeze transitions
+  bool _computeUnifiedVeto(ParState ps, {required bool twoDown}) {
+    // New unified veto: gate by twoDown & minSep, then apply residualLP hysteresis
+    const double vetoEnter = 0.010; // 1.0%
+    const double vetoExit = 0.006; // 0.6%
+    bool vetoByResidual(bool prev, double residualLP) {
+      if (prev) return residualLP >= vetoExit; // stay vetoed until below exit
+      return residualLP >= vetoEnter; // enter veto above enter
+    }
+
+    final double sepNow = ps.ema.sepNow; // px
+    final bool minSepOk = sepNow >= kParMinSepPx;
+    final bool twoOk = twoDown;
+    final bool prev = ps.veto; // last global decision (sticky)
+    final double rLP = ps.residualLP; // stabilized residual
+    final bool residualVeto = vetoByResidual(prev, rLP);
+    return !(twoOk && minSepOk) || residualVeto;
+  }
+
+  Offset _sumPanSinceLastApply = Offset.zero;
+  // Engine used for anchored rotate/zoom apply
+  final BmGestureEngine _bmEngine = BmGestureEngine();
+
+  // Apply guard: verify frame gid matches current and PAR state (if available)
+  bool _applyGuardOk({required int frameGid}) {
+    final s = _par9eState;
+    if (s != null && s.frameValid) {
+      if (s.gestureId != frameGid) {
+        debugPrint(
+          '[APPLY_GUARD] skip: gidMismatch par.gid=${s.gestureId} frameGid=$frameGid curGid=$_gid',
+        );
+        return false;
+      }
+    } else {
+      if (frameGid != _gid) {
+        debugPrint(
+          '[APPLY_GUARD] skip: gidSnapshot!=_gid frameGid=$frameGid curGid=$_gid',
+        );
+        return false;
+      }
+    }
+    return true;
+  }
+
+  int _seq = 0; // per-gesture sequence counter
+  final Queue<PanDelta> _panQ = Queue<PanDelta>();
+
+  void _enqPanFor(int eventGid, Offset dP) {
+    // Assert and drop if cross-gid publish attempt
+    assert(eventGid == _gid, 'Cross-gid event; dropping');
+    if (eventGid != _gid) {
+      debugPrint(
+        '[G0 PANQ DROP] reason=gidMismatch eventGid=$eventGid curGid=$_gid dP=(${dP.dx.toStringAsFixed(2)},${dP.dy.toStringAsFixed(2)})',
+      );
+      return;
+    }
+    final n = PanDelta(eventGid, ++_seq, dP);
+    _panQ.addLast(n);
+    debugPrint(
+      '[G0 PANQ ENQ] gid=${n.gid} seq=${n.seq} dP=(${dP.dx.toStringAsFixed(2)},${dP.dy.toStringAsFixed(2)}) size=${_panQ.length}',
+    );
+  }
+
+  Offset _drainPanForCurrentGesture() {
+    final gidNow = _gid;
+    var sum = Offset.zero;
+    int n = 0;
+    // Discard stale (wrong gid) and accumulate current gid
+    while (_panQ.isNotEmpty) {
+      final head = _panQ.first;
+      if (head.gid != gidNow) {
+        // Drop stale nodes from previous gesture with assertion in debug
+        assert(head.gid == gidNow, 'Cross-gid event; dropping');
+        debugPrint(
+          '[G0 PANQ DROP] reason=stale gid=${head.gid} curGid=$gidNow dP=(${head.dP.dx.toStringAsFixed(2)},${head.dP.dy.toStringAsFixed(2)})',
+        );
+        _panQ.removeFirst();
+        continue; // drop stale from previous gesture
+      }
+      sum += head.dP;
+      _panQ.removeFirst();
+      n++;
+    }
+    debugPrint(
+      '[G0 PANQ POP] gid=$gidNow n=$n sum=(${sum.dx.toStringAsFixed(2)},${sum.dy.toStringAsFixed(2)})',
+    );
+    return sum;
+  }
+
   // BM-199 hysteresis latch for residual-based pan veto
-  bool _residualVetoLatched = false;
+  final bool _residualVetoLatched = false; // never reassigned; make final
   // BM-200B.9h: single per-frame, raw-delta parallel pan veto helper
   final ParallelPanVeto _par9e = ParallelPanVeto();
   // BM-200B.9f: coalesced two-finger sampler to stabilize v1/v2
   final TwoFingerSampler _sampler9f = TwoFingerSampler();
   // BM-199B.1 P1: two-point partition plumbing (stable ids + kinematics)
   final TwoPointPartition _tp = TwoPointPartition();
+  // Zoom/Rotate EMA latch
+  final _ZrLatch _zrLatch = _ZrLatch();
   // BM-200B.7: simple gate dwell tracking for logs (no behavior change)
   int _bm200bGateOnSinceMs = -1;
   bool? _bm200bGateRotate;
   // BM-200B.9g: throttle summary logging while parallel veto holds
   DateTime? _bm200b9gLastSum;
 
-  // BM-200B.9a: strong-sample EMA-based parallel veto state (per-frame velocities)
-  void _bm200b8UpdateParallelVeto({
-    required Offset p1,
-    required Offset p2,
-    required int tNowMs,
-  }) {
-    // BM-200B.9h latch: update only when both fingers have new deltas since last commit
-    if (_tPrevMs < 0) {
-      // first commit init
-      _tPrevMs = tNowMs;
-      _p1PrevForPar = p1;
-      _p2PrevForPar = p2;
-      _cosParAvg = 1.0; // sane init (parallel)
-      _sepFracAvg = 0.0; // sane init
-      _currentParVeto = false;
-      return;
+  // Unified readiness predicate used across MODE, BM-199, and APPLY
+  // Matches: computed && validN>=8 && sepFracAvg>=0.01 && antiParReady
+  bool _parReady(ParallelPanVetoState s) {
+    return s.computed &&
+        (s.validN >= 8) &&
+        (s.sepFracAvg >= 0.01) &&
+        s.antiParReady;
+  }
+
+  // Update EMA-based hysteresis latches using persistent ParEma state
+  // Zoom: enter 0.35, exit 0.25; Rotate: enter 0.40, exit 0.30
+  // Both gated by sepFrac >= 0.04
+  void _updateEmaReady(ParEma s, double sepFrac) {
+    final bool bigEnough = sepFrac >= 0.04;
+    // Zoom (anti-parallel channel)
+    if (!_emaZoomReady) {
+      _emaZoomReady = bigEnough && (s.antiE >= 0.35);
+    } else {
+      _emaZoomReady = bigEnough && (s.antiE >= 0.25);
     }
-
-    final Offset d1 = p1 - _p1PrevForPar;
-    final Offset d2 = p2 - _p2PrevForPar;
-    // F1 validity gate: require max displacement strong enough in this frame
-    if (math.max(d1.distance, d2.distance) < _parMinPxPerFrame) {
-      // Hold: skip this frame entirely; do not update averages or prev/time
-      return;
+    // Rotate (orthogonal channel)
+    if (!_emaRotateReady) {
+      _emaRotateReady = bigEnough && (s.orthoE >= 0.40);
+    } else {
+      _emaRotateReady = bigEnough && (s.orthoE >= 0.30);
     }
+  }
 
-    final int dtMs = (tNowMs - _tPrevMs).clamp(1, 1000);
-    final double invDt = 1000.0 / dtMs; // px/s
-    // BM-200B.9d — Parallel detector inputs (absolute, NOT centroid-relative)
-    final Offset v1 = d1 * invDt;
-    final Offset v2 = d2 * invDt;
-
-    final double mag1 = v1.distance;
-    final double mag2 = v2.distance;
-    final double denom = (mag1 * mag2);
-    final bool strong =
-        (mag1 >= _parVMinPxS && mag2 >= _parVMinPxS && denom > 1e-6);
-
-    // (9h) Single PAR config: do not print legacy 9d proof here
-
-    double cosParRaw = 0.0;
-    if (strong) {
-      final double dot = v1.dx * v2.dx + v1.dy * v2.dy;
-      cosParRaw = (dot / denom).clamp(-1.0, 1.0);
-      _cosParAvg = _parEmaAlpha * cosParRaw + (1 - _parEmaAlpha) * _cosParAvg;
-      // sep fraction (strong only) — F5 sanity formula
-      final double sepNow = (p2 - p1).distance;
-      final double sepPrev = (_p2PrevForPar - _p1PrevForPar).distance;
-      final double sepDen = math.max(math.max(sepNow, sepPrev), 1.0);
-      final double sepFracRaw = (sepNow - sepPrev).abs() / sepDen;
-      _sepFracAvg =
-          _parEmaAlpha * sepFracRaw + (1 - _parEmaAlpha) * _sepFracAvg;
+  // Winner-takes-all decision (pan/zoom/rotate) with sticky ties
+  GMode _decide(
+    GMode prev,
+    bool zoomReady,
+    bool rotateReady,
+    double antiE,
+    double orthoE,
+  ) {
+    if (!zoomReady && !rotateReady) return GMode.pan;
+    const double margin = 0.05;
+    if (zoomReady && (!rotateReady || antiE > orthoE + margin)) {
+      return GMode.zoom;
     }
-
-    // BM-200B.9d — Deadbands for parallel veto
-    const double zoomDeadband = 0.010; // unit: sepFracAvg
-    final double sepFracAvgDb = (_sepFracAvg < zoomDeadband)
-        ? 0.0
-        : _sepFracAvg;
-
-    final bool parVeto =
-        strong && (_cosParAvg >= _parCosTh) && (sepFracAvgDb <= _parSepTh);
-    // Keep 9d as diagnostic; do not overwrite the main veto from 9e
-    _parVeto9d = parVeto;
-
-    // (9h) Silence legacy 9b per-frame prints; keep values for optional summary only
-
-    // Commit this sample only when both moved
-    _p1PrevForPar = p1;
-    _p2PrevForPar = p2;
-    _tPrevMs = tNowMs;
+    if (rotateReady && (!zoomReady || orthoE > antiE + margin)) {
+      return GMode.rotate;
+    }
+    return prev;
   }
 
   // RIGID diagnostics: continue logging a few frames post-lock
@@ -543,7 +1052,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
   // Previous raw values
   double _prevRawScale = 1.0;
   // double _prevRawAngle = 0.0; // no longer used; pointer-derived angle used instead
-  Offset _prevFocal = Offset.zero;
+  // _prevFocal removed: two-finger pan now uses centroid EMA
   // prev separation not used (we gate angle by min sep via crude proxy)
 
   // Low-pass smoothing helper
@@ -562,15 +1071,19 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
   Offset? _bm198AnchorScreen0;
 
   // Content bounds in world coordinates (rough default; adjust to your map)
-  final Rect _contentBounds = const Rect.fromLTWH(-2000, -2000, 4000, 4000);
+  // final Rect _contentBounds = const Rect.fromLTWH(-2000, -2000, 4000, 4000); // unused after refactor
 
   // Split preview/debug
   List<Offset>? _previewRingA;
   List<Offset>? _previewRingB;
-  (Offset, Offset)? _debugCutLine;
+  // Replaced Dart record (Offset, Offset) with a simple class to maintain
+  // compatibility with older analyzer versions used by build_runner.
+  CutLine? _debugCutLine;
   bool _splitMode = false;
   // Track active pointer positions in local (screen) space
   final Map<int, Offset> _activePointers = <int, Offset>{};
+  // Model A: remember last position for single-finger pan
+  Offset? _lastSinglePanPos;
   // Previous two-pointer snapshot for evidence calc
   Offset? _prevP1; // previous screen pos of smaller-ID pointer
   Offset? _prevP2; // previous screen pos of larger-ID pointer
@@ -585,23 +1098,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
   _bm199PairIds; // smallest two pointer IDs used for evidence; reset on change
 
   // DPI-aware minSepPx mapping (round to nearest multiple of 8 where applicable)
-  double _minSepForDpi(double dpr) {
-    double px;
-    if (dpr < 1.5) {
-      px = 88; // ~90 px → 88 (11×8)
-    } else if (dpr <= 2.0) {
-      px = 96; // 90–100 → pick 96
-    } else if (dpr <= 2.6) {
-      px = 112; // 110 → 112 (14×8)
-    } else if (dpr <= 3.2) {
-      px = 128; // 125 → 128 (16×8)
-    } else if (dpr <= 4.0) {
-      px = 144; // 140 → 144 (18×8)
-    } else {
-      px = 160; // very dense fallback (20×8)
-    }
-    return px.toDouble();
-  }
+  // double _minSepForDpi(double dpr) { return 96; } // removed (unused)
 
   String _modeTitle(TwoFingerMode m) {
     switch (m) {
@@ -623,12 +1120,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
   // Keep focal world point pinned using closed-form mapping.
   // previous focal-anchored delta helper is no longer used; replaced by matrix deltas
 
-  void _composeView(Size size) {
-    _view = Matrix4.identity()
-      ..translate(size.width / 2 + _pan.dx, size.height / 2 + _pan.dy)
-      ..rotateZ(_rotation)
-      ..scale(_scale);
-  }
+  // void _composeView(Size size) { /* unused after refactor */ }
 
   void _decomposeView(Size size) {
     // Extract rotation and scale from 2x2 submatrix, and pan from translation
@@ -646,12 +1138,16 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
     _pan = Offset(tx - cx, ty - cy);
   }
 
+  // Helpers for pivot and bounds
+  Offset _lerpOffset(Offset a, Offset b, double t) =>
+      Offset(a.dx + (b.dx - a.dx) * t, a.dy + (b.dy - a.dy) * t);
+  Offset _clampWorldToBounds(Offset p, Rect b) =>
+      Offset(p.dx.clamp(b.left, b.right), p.dy.clamp(b.top, b.bottom));
+  double _viewportWorldSpan(Size s) =>
+      (math.min(s.width, s.height) / (_scale == 0 ? 1.0 : _scale));
+
   // Extract scale from a given Matrix4 (based on 2x2 submatrix)
-  double _scaleFrom(Matrix4 m) {
-    final s = m.storage;
-    final m00 = s[0], m10 = s[1];
-    return math.sqrt(m00 * m00 + m10 * m10);
-  }
+  // double _scaleFrom(Matrix4 m) { return 1.0; } // unused
 
   // Convert screen-space point to world-space using current pan/scale/rotation
   Offset screenToWorld(
@@ -670,6 +1166,44 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
     return Offset(vx, vy);
   }
 
+  // XFORM mapping helpers (invertible): screen = T(tx,ty) * R * S * world
+  Offset worldToScreenXform(Offset w, TransformModel x) {
+    final c = math.cos(x.rotRad), s = math.sin(x.rotRad);
+    final sx = x.scale * w.dx, sy = x.scale * w.dy;
+    return Offset(c * sx - s * sy + x.tx, s * sx + c * sy + x.ty);
+  }
+
+  Offset screenToWorldXform(Offset p, TransformModel x) {
+    final px = p.dx - x.tx, py = p.dy - x.ty;
+    final c = math.cos(x.rotRad), s = math.sin(x.rotRad);
+    final rx = c * px + s * py; // R^T * (p - T)
+    final ry = -s * px + c * py;
+    final sc = (x.scale == 0 ? 1.0 : x.scale);
+    return Offset(rx / sc, ry / sc);
+  }
+
+  // Quick diagnostics (xform-only mappings)
+  void logRoundTrip(Offset pScreen, TransformModel x) {
+    final w = screenToWorldXform(pScreen, x);
+    final ps = worldToScreenXform(w, x);
+    final err = (ps - pScreen).distance;
+    debugPrint('[RT] screen→world→screen err=${err.toStringAsExponential(2)}');
+  }
+
+  void logWorldAabbOnScreen(Rect worldAabb, TransformModel x) {
+    final corners = <Offset>[
+      worldAabb.topLeft,
+      worldAabb.topRight,
+      worldAabb.bottomRight,
+      worldAabb.bottomLeft,
+    ].map((w) => worldToScreenXform(w, x)).toList();
+    final xs = corners.map((p) => p.dx).toList()..sort();
+    final ys = corners.map((p) => p.dy).toList()..sort();
+    debugPrint(
+      '[AABB→screen] x=[${xs.first.toStringAsFixed(1)}, ${xs.last.toStringAsFixed(1)}] y=[${ys.first.toStringAsFixed(1)}, ${ys.last.toStringAsFixed(1)}]',
+    );
+  }
+
   // Convert world-space to screen-space using current pan/scale/rotation
   Offset worldToScreen(
     Offset w,
@@ -685,6 +1219,304 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
     final ry = w.dx * s + w.dy * c;
     return center + pan + Offset(rx * scale, ry * scale);
   }
+
+  // Explicit pan application helper to keep spaces consistent
+  // M maps World -> Screen
+  // panPx: screen-space delta (pixels), panW: world-space delta (map units)
+  Matrix4 _applyPanMatrix(Matrix4 M, {Offset? panPx, Offset? panW}) {
+    assert((panPx == null) ^ (panW == null), 'Provide exactly one');
+    if (panPx != null) {
+      // SCREEN-SPACE PAN: pre-multiply by screen translation
+      final T = Matrix4.identity()..translate(panPx.dx, panPx.dy);
+      return T..multiply(M);
+    } else {
+      // WORLD-SPACE PAN: post-multiply by world translation
+      final w = panW!;
+      final tw = Matrix4.identity()..translate(w.dx, w.dy); // lowerCamelCase
+      return Matrix4.copy(M)..multiply(tw);
+    }
+  }
+
+  // ================= Unified PAR APPLY (persistent angle & scale) =================
+
+  _ApplyDeltas _deltasFor(
+    String mode,
+    double dLogLP,
+    double dThetaLP,
+    Offset panLP,
+  ) {
+    switch (mode) {
+      case 'pan':
+        return _ApplyDeltas(0.0, 0.0, panLP); // pure translation
+      case 'zoom':
+        return _ApplyDeltas(dLogLP, 0.0, Offset.zero);
+      case 'rotate':
+        return _ApplyDeltas(0.0, dThetaLP, Offset.zero);
+      case 'zr': // combined zoom+rotate mode (if present)
+        return _ApplyDeltas(dLogLP, dThetaLP, Offset.zero);
+    }
+    // Should never reach here; safeguard
+    return _ApplyDeltas(0.0, 0.0, Offset.zero);
+  }
+
+  // New apply respecting mode: pan does NOT mutate scale/rotation.
+  // Uses per-frame snapshots for mode/deltas/pan pivot to avoid mismatch.
+  void _applyParGate({
+    required ParState ps,
+    required Offset pivotWorld,
+    required _ApplyDeltas deltas,
+  }) {
+    final size = _lastPaintSize;
+    if (size == Size.zero) return;
+    // Kill legacy path entirely; keep stub for reference
+    if (!legacyApplyEnabled) {
+      // (dead code - never runs)
+      // applyPan(...); applyZoom(...); applyRotate(...);
+      return;
+    }
+    ps.mPrev ??= Matrix4.copy(_view);
+    final _ApplyDeltas d = deltas;
+    // Legacy apply guard — TEMP: when SM owns rotate/zoom, block legacy apply entirely
+    if (_sm.mode != sm.Mode.pan) {
+      debugPrint('[SM] blocked legacy apply while sm.mode=${_sm.mode}');
+      return;
+    }
+    // Accumulate scale/rotation only if active
+    if (d.dTheta != 0.0) {
+      ps.rotRad += d.dTheta;
+      // Optional rotation leash: keep within [-pi, pi]
+      if (ps.rotRad > math.pi) ps.rotRad -= 2 * math.pi;
+      if (ps.rotRad < -math.pi) ps.rotRad += 2 * math.pi;
+      ps.totalRotDeg = ps.rotRad * 180.0 / math.pi;
+    }
+    if (d.dLog != 0.0) {
+      final double sBefore = ps.totalScale;
+      final double sProp = sBefore * math.exp(d.dLog);
+      final double minS = ps.minScale;
+      final double maxS = ps.maxScale;
+      final double sClamped = sProp.clamp(minS, maxS);
+      if (sClamped == maxS && sBefore < maxS) {
+        debugPrint('[CLAMP] hit maxScale=$maxS');
+      }
+      if (sClamped == minS && sBefore > minS) {
+        debugPrint('[CLAMP] hit minScale=$minS');
+      }
+      ps.totalScale = sClamped;
+    }
+    // Compose matrix: anchored zoom/rotate around snapped world pivot; pan as simple translate
+    final sizeNow = size;
+    Matrix4 M = ps.mPrev!;
+    if (d.dTheta != 0.0 || d.dLog != 0.0) {
+      final double dLogApplied =
+          d.dLog; // already low-pass; clamp via ps.totalScale reconstruction
+      final Matrix4 deltaZR = Matrix4.identity()
+        ..translate(pivotWorld.dx, pivotWorld.dy)
+        ..rotateZ(d.dTheta)
+        ..scale(math.exp(dLogApplied))
+        ..translate(-pivotWorld.dx, -pivotWorld.dy);
+      M = deltaZR..multiply(M);
+    }
+    if (d.pan != Offset.zero) {
+      M = _applyPanMatrix(M, panPx: d.pan);
+    }
+    ps.mNew = M;
+    // Proper bounds leash: ensure viewport world-AABB stays within _worldBounds
+    if (_worldBounds != null) {
+      final stor = M.storage;
+      final m00 = stor[0], m10 = stor[1];
+      final tx = stor[12], ty = stor[13];
+      final scNow = math.sqrt(m00 * m00 + m10 * m10);
+      final rotNow = math.atan2(m10, m00);
+      final cx = sizeNow.width / 2.0;
+      final cy = sizeNow.height / 2.0;
+      final panNow = Offset(tx - cx, ty - cy);
+      // Compute world AABB of the 4 screen corners
+      final tlW = screenToWorld(
+        const Offset(0, 0),
+        sizeNow,
+        panNow,
+        scNow,
+        rotNow,
+      );
+      final trW = screenToWorld(
+        Offset(sizeNow.width, 0),
+        sizeNow,
+        panNow,
+        scNow,
+        rotNow,
+      );
+      final brW = screenToWorld(
+        Offset(sizeNow.width, sizeNow.height),
+        sizeNow,
+        panNow,
+        scNow,
+        rotNow,
+      );
+      final blW = screenToWorld(
+        Offset(0, sizeNow.height),
+        sizeNow,
+        panNow,
+        scNow,
+        rotNow,
+      );
+      double minX = math.min(
+        math.min(tlW.dx, trW.dx),
+        math.min(brW.dx, blW.dx),
+      );
+      double maxX = math.max(
+        math.max(tlW.dx, trW.dx),
+        math.max(brW.dx, blW.dx),
+      );
+      double minY = math.min(
+        math.min(tlW.dy, trW.dy),
+        math.min(brW.dy, blW.dy),
+      );
+      double maxY = math.max(
+        math.max(tlW.dy, trW.dy),
+        math.max(brW.dy, blW.dy),
+      );
+      Rect viewAabbW = Rect.fromLTRB(minX, minY, maxX, maxY);
+      final Rect wb = _worldBounds!;
+      double dxW = 0.0, dyW = 0.0;
+      // Horizontal correction
+      if (viewAabbW.width <= wb.width) {
+        if (viewAabbW.left < wb.left) dxW = wb.left - viewAabbW.left;
+        if (viewAabbW.right > wb.right) dxW = wb.right - viewAabbW.right;
+      } else {
+        // If viewport wider than bounds, keep centers aligned
+        dxW = wb.center.dx - viewAabbW.center.dx;
+      }
+      // Vertical correction
+      if (viewAabbW.height <= wb.height) {
+        if (viewAabbW.top < wb.top) dyW = wb.top - viewAabbW.top;
+        if (viewAabbW.bottom > wb.bottom) dyW = wb.bottom - viewAabbW.bottom;
+      } else {
+        // If viewport taller than bounds, keep centers aligned
+        dyW = wb.center.dy - viewAabbW.center.dy;
+      }
+      if (dxW != 0.0 || dyW != 0.0) {
+        // Convert world correction to screen-space delta and pre-multiply
+        final c = math.cos(rotNow);
+        final s = math.sin(rotNow);
+        final sx = (dxW * c - dyW * s) * scNow;
+        final sy = (dxW * s + dyW * c) * scNow;
+        M = (Matrix4.identity()..translate(sx, sy))..multiply(M);
+        if (!_leashedLastFrame) {
+          debugPrint(
+            '[LEASH] corrected world Δ=(${dxW.toStringAsFixed(2)},${dyW.toStringAsFixed(2)}) '
+            'viewAABB=(${viewAabbW.left.toStringAsFixed(2)},${viewAabbW.top.toStringAsFixed(2)},'
+            '${viewAabbW.right.toStringAsFixed(2)},${viewAabbW.bottom.toStringAsFixed(2)}) '
+            'bounds=(${wb.left.toStringAsFixed(2)},${wb.top.toStringAsFixed(2)},${wb.right.toStringAsFixed(2)},${wb.bottom.toStringAsFixed(2)})',
+          );
+        }
+        _leashedLastFrame = true;
+      } else {
+        _leashedLastFrame = false;
+      }
+    }
+    setState(() {
+      _view = M;
+      _decomposeView(sizeNow);
+    });
+    ref
+        .read(mapViewController)
+        .update(pan: _pan, scale: _scale, rotation: _rotation);
+    final stor = M.storage;
+    final tx = stor[12];
+    final ty = stor[13];
+    debugPrint(
+      '[APPLY] mode=${ps.deprecatedModeSnapshot} panPx=(${d.pan.dx.toStringAsFixed(1)},${d.pan.dy.toStringAsFixed(1)}) dS=${d.dLog.toStringAsFixed(3)} dθ=${d.dTheta.toStringAsFixed(3)} → tx=${tx.toStringAsFixed(1)} ty=${ty.toStringAsFixed(1)} scale=${ps.totalScale.toStringAsFixed(2)} rot=${ps.totalRotDeg.toStringAsFixed(1)}°',
+    );
+    // Gesture stability heuristic temporarily disabled due to helper removal.
+    // if (!_gestureStable &&
+    //     _isGestureStable(ps.deprecatedModeSnapshot, ps.dLogLP, ps.dThetaLP)) {
+    //   _gestureStable = true;
+    // }
+  }
+
+  // ==== GestureStateMachine: frame adapters ====
+  // Convert authoritative ParState snapshot + our pipeline deltas into
+  // the state machine's GateDecision and Estimates structures.
+  sm.GateDecision _smGateFromPar(ParState ps, {required bool veto}) {
+    // Map ParState.mode string to an intent for gate decision
+    final String m = ps.deprecatedModeSnapshot;
+    final bool zr = (m == 'zr' || m == 'mixed');
+    final intent = zr
+        ? (ps.zoomReady
+              ? sm.Intent.zoom
+              : (ps.rotateReady ? sm.Intent.rotate : sm.Intent.pan))
+        : (m == 'zoom'
+              ? sm.Intent.zoom
+              : m == 'rotate'
+              ? sm.Intent.rotate
+              : sm.Intent.pan);
+    // We prioritize rotate when both true only if mode says so; bias can be tuned later
+    final gd = sm.decideFromPargate(
+      m,
+      ps.zoomReady,
+      ps.rotateReady,
+      zoomBias: 1.1,
+    );
+    // Preserve ready flags from ParState but use chosen intent from helper
+    return sm.GateDecision(gd.intent, ps.zoomReady, ps.rotateReady);
+  }
+
+  sm.Estimates _smEstimatesFromPipeline({
+    required double dTheta,
+    required double dLogSep,
+    required Offset dPan,
+    double? rotE,
+    double? zoomE,
+  }) {
+    return sm.Estimates(
+      dTheta: dTheta,
+      dLogSep: dLogSep,
+      dPan: dPan,
+      rotE: rotE,
+      zoomE: zoomE,
+    );
+  }
+
+  // Lifecycle observer (ensure only one set of overrides)
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // BM-200R2.2: ensure legacy XFORM engine disabled.
+    bm200rUseOldXform = false;
+    // Early fit attempt so initial pan/zoom clamp has bounds before first gesture.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _worldBounds == null) {
+        final box = context.findRenderObject() as RenderBox?;
+        final size = box?.size ?? Size.zero;
+        if (size != Size.zero) {
+          final prop = ref.read(activePropertyProvider).asData?.value;
+          final proj = ProjectionService(
+            prop?.originLat ?? prop?.lat ?? 0,
+            prop?.originLon ?? prop?.lon ?? 0,
+          );
+          _fitOnce(size, proj);
+        }
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _animCtrl?.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _setFreeze(FreezeCause.lifecycle, const Duration(milliseconds: 60));
+    } else if (state == AppLifecycleState.paused) {
+      _setFreeze(FreezeCause.lifecycle, const Duration(milliseconds: 60));
+    }
+  }
+  // ===============================================================================
 
   @override
   Widget build(BuildContext context) {
@@ -735,13 +1567,118 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
       ),
       body: Stack(
         children: [
+          // Pointer listener (restores lost structure after zoom button insertion)
           Listener(
             onPointerDown: (e) {
-              // Positions are in local coordinates of the Listener
               _activePointers[e.pointer] = e.localPosition;
+              if (kUseSimGesture) {
+                if (_activePointers.length == 1) {
+                  _lastSinglePanPos = e.localPosition;
+                }
+                if (_activePointers.length == 2) {
+                  final ids = _activePointers.keys.toList()..sort();
+                  _sim.start(
+                    _activePointers[ids[0]]!,
+                    _activePointers[ids[1]]!,
+                  );
+                  _lastSinglePanPos = null;
+                }
+              }
+              // Legacy two-finger bind logic (preserved)
+              final twoNow = _activePointers.length >= 2;
+              if (twoNow && !_twoDown) {
+                _gid++;
+                ensureParState(_gid);
+                _emaZoomReady = false;
+                _emaRotateReady = false;
+                _seq = 0;
+                _panQ.clear();
+                final ids = _activePointers.keys.toList()..sort();
+                final p1s = _activePointers[ids[0]]!;
+                final p2s = _activePointers[ids[1]]!;
+                final nowMs = DateTime.now().millisecondsSinceEpoch;
+                _sampler9f.beginGesture(
+                  pointerId1: ids[0],
+                  pointerId2: ids[1],
+                  p1: p1s,
+                  p2: p2s,
+                  nowMs: nowMs,
+                );
+                _tp.begin(id1: ids[0], id2: ids[1], p1: p1s, p2: p2s);
+                final ParState psBind = ensureParState(_gid);
+                _par9e.beginGesture(gestureId: _gid, ps: psBind);
+                _parFeedLogCount = 0;
+                debugPrint(
+                  '[G0 BIND] gid=${_gid} twoDown=2 ids=[${ids[0]},${ids[1]}]',
+                );
+                final overrideVal =
+                    (_par9e.forceAlwaysTrue
+                            ? true
+                            : (_par9e.forceAlwaysFalse ? false : null))
+                        ?.toString() ??
+                    'NA';
+                debugPrint(
+                  '[BM-200B.9h HANDOFF] gid=${_gid} instance=${identityHashCode(_par9e)} override=${overrideVal}',
+                );
+                _twoDown = true;
+                _sm.onTwoDownChange();
+                _setFreeze(
+                  FreezeCause.twoDownChange,
+                  const Duration(milliseconds: 30),
+                );
+                final cpxSeed = (p1s + p2s) * 0.5;
+                _prevCpx = cpxSeed;
+                _panPxLP = Offset.zero;
+                _freezePrev = true;
+                _twoBelowSinceMs = -1;
+                psBind.minScale = 0.75;
+                if (_activePointers.length >= 2) {
+                  final ids2 = _activePointers.keys.toList()..sort();
+                  final cPx =
+                      (_activePointers[ids2[0]]! + _activePointers[ids2[1]]!) *
+                      0.5;
+                  final sizeNow = _lastPaintSize;
+                  if (sizeNow != Size.zero) {
+                    _pivotWAnchor = screenToWorld(
+                      cPx,
+                      sizeNow,
+                      _pan,
+                      _scale,
+                      _rotation,
+                    );
+                  }
+                }
+              } else if (twoNow && _twoDown && _twoBelowSinceMs >= 0) {
+                _twoBelowSinceMs = -1;
+                debugPrint('[G0 BIND] gid=$_gid dropout canceled (rejoined)');
+              }
             },
             onPointerMove: (e) {
               _activePointers[e.pointer] = e.localPosition;
+              if (kUseSimGesture && _activePointers.length == 2) {
+                final ids = _activePointers.keys.toList()..sort();
+                final p1 = _activePointers[ids[0]]!;
+                final p2 = _activePointers[ids[1]]!;
+                final u = _sim.update(p1, p2);
+                debugPrint('[SIM] update ' + u.toString());
+                _applySimGesture(u);
+                // Conditional rotation (future). Criteria: scaleFactor ~= 1 AND |dθ| > threshold AND feature flag true.
+                if (kEnableSimRotateLater && u.rotationDelta != 0.0) {
+                  final bool zoomTiny = (u.scaleFactor - 1.0).abs() < 0.0005;
+                  final bool angleBig =
+                      u.rotationDelta.abs() > 0.0025; // ~0.14°
+                  if (zoomTiny && angleBig) {
+                    // Rotation by gesture intentionally disabled.
+                  }
+                }
+                if (mounted) setState(() {}); // repaint if anything changed
+                return; // bypass legacy pipeline
+              }
+              if (kUseSimGesture && _activePointers.length == 1) {
+                // Single-finger path is reserved for taps/selection only.
+                // Do not mutate transform here.
+                return;
+              }
               // Feed the two-finger sampler with raw pointer moves for coalescing
               if (_sampler9f.id1 != null && _sampler9f.id2 != null) {
                 _sampler9f.onPointerMove(e.pointer, e.localPosition);
@@ -750,29 +1687,69 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
             },
             onPointerUp: (e) {
               _activePointers.remove(e.pointer);
+              if (kUseSimGesture &&
+                  _activePointers.length < 2 &&
+                  _sim.isActive) {
+                _sim.end();
+              }
+              if (kUseSimGesture && _activePointers.isEmpty) {
+                _lastSinglePanPos = null;
+              }
               if (_activePointers.length < 2) {
-                _sampler9f.endGesture();
-                _tp.end();
+                // Start dropout grace timer; don't end gesture immediately
+                if (_twoDown && _twoBelowSinceMs < 0) {
+                  _twoBelowSinceMs = DateTime.now().millisecondsSinceEpoch;
+                  debugPrint(
+                    '[G0 BIND] gid=$_gid two<2 → start dropout grace ${_twoDropoutGraceMs}ms',
+                  );
+                }
               }
             },
             onPointerCancel: (e) {
               _activePointers.remove(e.pointer);
+              if (kUseSimGesture &&
+                  _activePointers.length < 2 &&
+                  _sim.isActive) {
+                _sim.end();
+              }
+              if (kUseSimGesture && _activePointers.isEmpty) {
+                _lastSinglePanPos = null;
+              }
               if (_activePointers.length < 2) {
-                _sampler9f.endGesture();
-                _tp.end();
+                // Start dropout grace timer; don't end gesture immediately
+                if (_twoDown && _twoBelowSinceMs < 0) {
+                  _twoBelowSinceMs = DateTime.now().millisecondsSinceEpoch;
+                  debugPrint(
+                    '[G0 BIND] gid=$_gid two<2 → start dropout grace ${_twoDropoutGraceMs}ms',
+                  );
+                }
               }
             },
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               onScaleStart: (d) {
+                // Under simplified sim path, mark gesturing and skip legacy init.
+                if (kUseSimGesture) {
+                  _isGesturing = true;
+                  return;
+                }
                 _isGesturing = true;
                 // Clear sticky anchors at gesture start
                 _rotateAnchorWorld = null;
                 _zoomAnchorWorld = null;
+                _gestureStable = false; // reset stability each gesture
+                // Reset two-finger centroid smoother
+                _cFilt = null;
+                _cLast = null;
+                // Reset rotation/zoom readiness gate
+                _rdyConsec = 0;
+                _rotZoomReady = false;
                 // Clear BM-198 diagnostic anchor and window
                 _bm198AnchorWorld = null;
                 _bm198AnchorScreen0 = null;
                 _bm198RotDrifts.clear();
+                // Reset ZR latch
+                _zrLatch.reset();
                 // Cancel any running programmatic animation
                 if (_animCtrl != null) {
                   _animCtrl!.stop();
@@ -784,8 +1761,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                 // baselines not needed for BM-195
                 _twoMode = TwoFingerMode.undecided;
                 _lastFocal = d.localFocalPoint;
-                // BM-195 initialize session
-                _gid++;
+                // BM-195 initialize session (do not bump gid here; bind on twoDown)
                 _switches = 0;
                 final now = DateTime.now();
                 _lockTime = now;
@@ -793,7 +1769,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                 _lastSwitchTime = now;
                 _prevRawScale = 1.0; // baseline
                 // _prevRawAngle = 0.0; // baseline
-                _prevFocal = d.localFocalPoint;
+                // _prevFocal removed
                 // no prev separation stored
                 _eScale = 0.0;
                 _eAngle = 0.0;
@@ -802,9 +1778,9 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                 _cumAngleTotal = 0.0;
                 _sAngle = 0.0;
                 _sScale = 0.0;
-                _lastRotateMs = null;
-                _bm194LastFrameTs = null;
+                // BM-199B.3: remember last veto state to log flips
                 _bm199PrevVeto = null;
+                // BM-199B.4: gesture-long pointer pair lock and veto averaging buffer
                 _pairLocked = false;
                 _pairId1 = null;
                 _pairId2 = null;
@@ -817,61 +1793,17 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                 _prevSep = null;
                 // _prevPairAngle = null;
                 // Reset BM-200B.8 veto state
-                _cosParAvg = 0.0;
-                _sepFracAvg = 0.0;
                 // latch resets via _tPrevMs
                 _p1PrevForPar = Offset.zero;
                 _p2PrevForPar = Offset.zero;
                 _tPrevMs = -1;
                 _currentParVeto = false;
-                _parVeto9d = false;
-                // Reset residual-based pan veto latch
-                _residualVetoLatched = false;
                 // Reset 9h entry guard state
                 _par9ePrevVeto = false;
-                _par9eEntryMs = -1;
-                _par9eGuardActive = false;
-                // Init BM-200B.9h helper
-                _par9e.beginGesture();
-                // PAR→APPLY handoff: log instance/override wiring once per gesture
-                debugPrint(
-                  '[BM-200B.9h HANDOFF] instance=${identityHashCode(_par9e)} '
-                          'override=' +
-                      ((_par9e.forceAlwaysTrue
-                                  ? true
-                                  : (_par9e.forceAlwaysFalse ? false : null))
-                              ?.toString() ??
-                          'NA'),
-                );
-                // Initialize 9f sampler and lock IDs immediately if two pointers are already down
-                if (_activePointers.length >= 2) {
-                  final ids = _activePointers.keys.toList()..sort();
-                  final p1s = _activePointers[ids[0]]!;
-                  final p2s = _activePointers[ids[1]]!;
-                  final nowMs = DateTime.now().millisecondsSinceEpoch;
-                  _sampler9f.beginGesture(
-                    pointerId1: ids[0],
-                    pointerId2: ids[1],
-                    p1: p1s,
-                    p2: p2s,
-                    nowMs: nowMs,
-                  );
-                  // Begin TwoPointPartition with the same stable pair
-                  _tp.begin(id1: ids[0], id2: ids[1], p1: p1s, p2: p2s);
-                  // Lock BM-199 pair identity at gesture begin
-                  _pairId1 = ids[0];
-                  _pairId2 = ids[1];
-                  _pairLocked = true;
-                  debugPrint(
-                    '[BM-199 PAIR] id1=#${_pairId1} id2=#${_pairId2} locked=true',
-                  );
-                  debugPrint(
-                    '[BM-199 IDLOCK] begin: A=#${_pairId1} B=#${_pairId2}',
-                  );
-                }
+                // IDs and PAR binding will occur on twoDown in the raw pointer listener
                 // Init BM-199: DPR-aware minSep
-                // BM-199B.2: Use fixed logical minSep for gating (64 px)
-                final double minSep = 64.0;
+                // BM-199B.2: Use fixed logical minSep for gating (48 px per tunables)
+                final double minSep = 48.0;
                 _bm199Gate = BM199Gate(
                   BM199Params(
                     rotHysRad: 0.10, // per BM-199
@@ -897,12 +1829,51 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                   _bmEngine.M = Matrix4.copy(_view);
                 }
                 debugPrint(
-                  '$_tag GESTURE start count=${d.pointerCount} '
+                  '$_tag GESTURE start gid=${_gid} count=${d.pointerCount} '
                   'scale=$_startScale rot=${_startRotation.toStringAsFixed(3)}',
                 );
               },
               onScaleUpdate: (d) {
+                // When using the simplified gesture path, all two-finger logic
+                // (pan/zoom[/rotate]) is applied in raw pointer handlers.
+                // We skip legacy SM/PARGATE processing to avoid double-apply.
+                if (kUseSimGesture) {
+                  return;
+                }
                 if (_animCtrl != null) return; // ignore during animation
+                // H) Skip frames if no active pointers
+                if (_activePointers.isEmpty || d.pointerCount == 0) {
+                  return;
+                }
+                // Handle dropout grace expiration here as well
+                if (_twoDown &&
+                    _activePointers.length < 2 &&
+                    _twoBelowSinceMs >= 0) {
+                  final nowMsChk = DateTime.now().millisecondsSinceEpoch;
+                  if (nowMsChk - _twoBelowSinceMs >= _twoDropoutGraceMs) {
+                    // Hygiene debounce: end gesture only if both pointers are up
+                    if (_activePointers.isEmpty) {
+                      _par9e.endGesture();
+                      _sampler9f.endGesture();
+                      _tp.end();
+                      _twoDown = false;
+                      // Notify SM about losing two-down to reset timers
+                      _sm.onTwoDownChange();
+                      _twoBelowSinceMs = -1;
+                      debugPrint(
+                        '[G0 BIND] gid=${_gid} release due to dropout (both up)',
+                      );
+                    } else {
+                      // Still at least one finger down: keep waiting; don't flip twoDown
+                      _twoBelowSinceMs = nowMsChk; // extend window
+                      debugPrint(
+                        '[G0 BIND] gid=${_gid} hygiene debounce: still down=${_activePointers.length}, extend grace',
+                      );
+                    }
+                  }
+                }
+                // Reset pending pan accumulator for this frame
+                _pendingPanDp = Offset.zero;
                 // BM-194 capture previous state for per-frame logging
                 final prevPanBM194 = _pan;
                 final prevScaleBM194 = _scale;
@@ -911,19 +1882,21 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                   final box = context.findRenderObject() as RenderBox?;
                   size = box?.size ?? size;
                 }
-                // DPI-aware minSep threshold (unused for gating; kept for logs)
-                final double bmDpr = MediaQuery.of(context).devicePixelRatio;
-                final double bmMinSepPx = _minSepForDpi(bmDpr);
+                // DPI-aware minSep threshold (removed unused bmMinSepPx/frameGid after refactor)
+                // final double bmMinSepPx = _minSepForDpi(MediaQuery.of(context).devicePixelRatio);
                 if (d.pointerCount < 2) {
                   // 1-finger pan by focal delta (update pan directly)
+                  // Reset two-finger centroid smoothing when dropping below two fingers
+                  _cFilt = null;
+                  _cLast = null;
+                  _prevCpx = null; // reset two-finger centroid seed
+                  // Reset readiness when not in two-finger state
+                  _rdyConsec = 0;
+                  _rotZoomReady = false;
                   final dp =
                       (d.localFocalPoint - _lastFocal) * Tunables.panGain;
-                  _pan = _pan + dp;
-                  // Clamp and compose
-                  _pan = Tunables.keepInBounds
-                      ? _clampPan(_pan, _scale, _rotation, size)
-                      : _pan;
-                  _composeView(size);
+                  // Producer: publish dp later via single ENQ site (no early apply)
+                  _pendingPanDp += dp;
                   _lastFocal = d.localFocalPoint;
                   // BM-194 per-frame state log for 1-finger pan
                   if (kBM194Enable && kBM194StateLogs) {
@@ -947,20 +1920,17 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                       'dAngle=${_sgn(0.0, frac: 3)} rad dPan=(${_sgn(dPan.dx)},${_sgn(dPan.dy)})',
                     );
                     debugPrint(
-                      '  sep=0px focal=(${d.localFocalPoint.dx.toStringAsFixed(0)},${d.localFocalPoint.dy.toStringAsFixed(0)}) '
-                      'fps=${fps.toStringAsFixed(0)}',
+                      '  sep=0px focal=(${d.localFocalPoint.dx.toStringAsFixed(0)},${d.localFocalPoint.dy.toStringAsFixed(0)}) fps=${fps.toStringAsFixed(0)}',
                     );
                   }
                 } else {
                   // ================= BM-195 core logic =================
                   // Raw (relative to gesture start)
-                  final double rawScale = d.scale; // 1.0 at start
-                  final double rawAngle = d.rotation; // 0.0 at start (radians)
-                  final Offset focal = d.localFocalPoint;
+                  // rawScale/rawAngle/focal locals removed; unified ParState handles deltas
                   // Centroid/rigid-fit diagnostics
                   // (legacy parallel-like metrics removed)
                   // True separation from two raw pointers (screen space), pair locking across gesture
-                  double sep = 0.0;
+                  // sep local removed; sampler/par state supplies separation
                   int? pid1;
                   int? pid2;
                   Offset? p1;
@@ -984,11 +1954,11 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                     _pairLocked = true;
                     // BM-199 PAIR: log lock
                     debugPrint(
-                      '[BM-199 PAIR] id1=#${_pairId1} id2=#${_pairId2} locked=true',
+                      '[BM-199 PAIR] gid=${_gid} id1=#${_pairId1} id2=#${_pairId2} locked=true',
                     );
                     // ID lock log (once per gesture)
                     debugPrint(
-                      '[BM-199 IDLOCK] begin: A=#${_pairId1} B=#${_pairId2}',
+                      '[BM-199 IDLOCK] gid=${_gid} begin: A=#${_pairId1} B=#${_pairId2}',
                     );
                     if (!_rigidCfgLogged) {
                       debugPrint(
@@ -1001,7 +1971,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                     // BM-199 PAIR: log unlock (if previously locked)
                     if (_pairLocked) {
                       debugPrint(
-                        '[BM-199 PAIR] id1=#${_pairId1} id2=#${_pairId2} locked=false',
+                        '[BM-199 PAIR] gid=${_gid} id1=#${_pairId1} id2=#${_pairId2} locked=false',
                       );
                     }
                     _pairLocked = false;
@@ -1035,23 +2005,189 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                     pid2 = _pairId2;
                     p1 = _activePointers[pid1]!;
                     p2 = _activePointers[pid2]!;
-                    sep = (p1 - p2).distance;
+                    // separation handled via sampler; local sep removed
                     // BM-200B.9f: emit coalesced two-finger sample and update 9e veto
                     final sample = _sampler9f.tryEmit(nowMsAll);
-                    if (sample != null) {
-                      // 9h compute first; single-source state for the rest of this frame
-                      _par9eState = _par9e.updateAndGet(
+                    if (_twoDown && sample != null) {
+                      // Provide viewport min before updating PAR (for absolute sep normalization)
+                      final double vmin = math.max(
+                        1.0,
+                        math.min(size.width, size.height),
+                      );
+                      _par9e.setViewportMin(vmin);
+                      // Ordered pipeline: PAR_FEED -> PARGATE -> APPLY_ZR -> VETO
+                      final ParState _psFrame = ensureParState(_gid);
+                      final result = _par9e.stepWithSample(
+                        ps: _psFrame,
+                        p1_prev: sample.p1Prev,
+                        p2_prev: sample.p2Prev,
                         p1_now: sample.p1Now,
                         p2_now: sample.p2Now,
+                        twoDown: _twoDown,
                       );
+                      // Capture centroid prev/now + raw deltas for APPLY stage
+                      _parCentroidPrev = Offset(
+                        (sample.p1Prev.dx + sample.p2Prev.dx) * 0.5,
+                        (sample.p1Prev.dy + sample.p2Prev.dy) * 0.5,
+                      );
+                      _parCentroidNow = Offset(
+                        (sample.p1Now.dx + sample.p2Now.dx) * 0.5,
+                        (sample.p1Now.dy + sample.p2Now.dy) * 0.5,
+                      );
+                      if (_parCentroidNow != null) {
+                        // Two-finger pan delta pipeline (locked path)
+                        final bool freezeNow = _freezeActive;
+                        if (_freezePrev && !freezeNow) {
+                          _prevCpx ??= _parCentroidNow; // ensure no large jump
+                          _freezePrev = false;
+                        }
+                        // Raw delta (screen pixels)
+                        Offset panPxRaw = Offset.zero;
+                        if (_prevCpx != null) {
+                          panPxRaw = _parCentroidNow! - _prevCpx!;
+                        }
+                        _prevCpx = _parCentroidNow;
+                        // Low-pass
+                        const double panAlpha = 0.25;
+                        _panPxLP = Offset(
+                          _panPxLP.dx * (1 - panAlpha) + panPxRaw.dx * panAlpha,
+                          _panPxLP.dy * (1 - panAlpha) + panPxRaw.dy * panAlpha,
+                        );
+                        // Small deadzone
+                        const double panEpsPx = 0.10;
+                        final Offset panPxUse = _panPxLP.distance < panEpsPx
+                            ? Offset.zero
+                            : _panPxLP;
+                        // Always publish to SM; it will apply only in Mode.pan
+                        _pendingPanDp += panPxUse;
+                        debugPrint(
+                          '[PAN] raw=' +
+                              panPxRaw.dx.toStringAsFixed(2) +
+                              ',' +
+                              panPxRaw.dy.toStringAsFixed(2) +
+                              ' lp=' +
+                              _panPxLP.dx.toStringAsFixed(2) +
+                              ',' +
+                              _panPxLP.dy.toStringAsFixed(2) +
+                              ' use=' +
+                              panPxUse.dx.toStringAsFixed(2) +
+                              ',' +
+                              panPxUse.dy.toStringAsFixed(2) +
+                              ' freeze=' +
+                              freezeNow.toString(),
+                        );
+                        // Build gate decision from authoritative ParState
+                        // _updateGateReadinessAndMode(_psFrame, _psFrame.ema.sepNow, kParMinSepPx); // helper removed
+                        // Build gate decision from authoritative ParState
+                        final gate = GateDecision(
+                          mode: _psFrame.deprecatedModeSnapshot,
+                          veto: result.veto,
+                          zoomReady: _psFrame.zoomReady,
+                          rotateReady: _psFrame.rotateReady,
+                          dLogLP: _psFrame.dLogLP,
+                          dThetaLP: _psFrame.dThetaLP,
+                          centroidW: screenToWorld(
+                            _parCentroidNow!,
+                            size,
+                            _pan,
+                            _scale,
+                            _rotation,
+                          ),
+                        );
+                        // Feed SM heartbeat right after gate+estimate are known
+                        final _smGate = _smGateFromPar(
+                          _psFrame,
+                          veto: result.veto,
+                        );
+                        final _smEst = _smEstimatesFromPipeline(
+                          dTheta: _psFrame.dThetaLP,
+                          dLogSep: _psFrame.dLogLP,
+                          dPan: _pendingPanDp,
+                        );
+                        _sm.onFrame(_smEst, _smGate, veto: result.veto);
+                        // Probe: expected vs rendered after SM apply
+                        assert(() {
+                          debugPrint(
+                            '[SM] view-sync expected rot=' +
+                                (_sm.debugTotalRotRad?.toStringAsFixed(3) ??
+                                    'NA') +
+                                ' scale=' +
+                                ((_sm.debugTotalScale)?.toStringAsFixed(3) ??
+                                    'NA') +
+                                ' → rendered rot=' +
+                                _xform.rotRad.toStringAsFixed(3) +
+                                ' scale=' +
+                                _xform.scale.toStringAsFixed(3),
+                          );
+                          return true;
+                        }());
+                        assert(() {
+                          if (_psFrame.rotateReady || _psFrame.zoomReady) {
+                            debugPrint(
+                              '[SM] heartbeat mode=' +
+                                  _sm.mode.toString() +
+                                  ' rotReady=' +
+                                  _psFrame.rotateReady.toString() +
+                                  ' zoomReady=' +
+                                  _psFrame.zoomReady.toString(),
+                            );
+                          }
+                          return true;
+                        }());
+                        // Always emit BM-199 telemetry even during freeze
+                        final nowMs = DateTime.now().millisecondsSinceEpoch;
+                        final _ = _bm199Gate?.telemetry(
+                          gate,
+                          freeze: _freezeActive,
+                          nowMs: nowMs,
+                        );
+                        // Sanity asserts
+                        assert(
+                          !(gate.mode == 'pan' &&
+                              (_psFrame.dLogLP.abs() > 0.02 ||
+                                  _psFrame.dThetaLP.abs() > 0.05)),
+                          'Pan should not carry big zoom/rot deltas',
+                        );
+                        assert(
+                          !_freezeActive || gate.veto,
+                          'If FREEZE, we should be vetoing Apply',
+                        );
+                        // Only mutate state when not frozen and not vetoed
+                        if (!_freezeActive && !gate.veto) {
+                          final modeSnap = _psFrame.deprecatedModeSnapshot;
+                          final dLogSnap = _psFrame.dLogLP;
+                          final dThetaSnap = _psFrame.dThetaLP;
+                          final panSnap = _pendingPanDp; // screen px
+                          final pivotSnapW = screenToWorld(
+                            _parCentroidNow!,
+                            size,
+                            _pan,
+                            _scale,
+                            _rotation,
+                          );
+                          final _ApplyDeltas deltas = _deltasFor(
+                            modeSnap,
+                            dLogSnap,
+                            dThetaSnap,
+                            panSnap,
+                          );
+                          _applyParGate(
+                            ps: _psFrame,
+                            pivotWorld: pivotSnapW,
+                            deltas: deltas,
+                          );
+                        }
+                      }
+                      // deltas now read from ParState (psCurrent.dLogSep/dTheta)
+                      _par9eState = result.state;
                       _par9eDidComputeThisFrame = true;
-                      _currentParVeto = _par9eState!.parVeto;
+                      _currentParVeto = result.veto;
                       // Pre-veto shield: active while not latched and cos>=0.95 with validN<6 on a valid frame
                       _par9eShieldActive =
                           (_par9eState!.frameValid &&
                           !_currentParVeto &&
                           _par9eState!.validN < 6 &&
-                          _par9eState!.cosParAvg >= 0.95);
+                          _par9eState!.cosParAvg >= 0.90);
                       // Capture invariants for this frame
                       _par9eLastGid = _par9eState!.gestureId;
                       _par9eLastSeq = _par9eState!.frameSeq;
@@ -1061,10 +2197,17 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                       // parVeto already reflected in _currentParVeto
                       // 9h rising edge → start guard window
                       if (!_par9ePrevVeto && _currentParVeto) {
-                        _par9eEntryMs = nowMsAll;
-                        debugPrint('[FREEZE] start parVeto=true');
+                        // Legacy per-veto freeze removed; do not start freeze here
                       }
                       _par9ePrevVeto = _currentParVeto;
+                      // Feed ZR latch from authoritative PAR state
+                      if (_par9eState!.frameValid) {
+                        _zrLatch.feed(
+                          _par9eState!.cosParAvg,
+                          _par9eState!.sepFracAvg,
+                          alpha: 0.25,
+                        );
+                      }
                       // BM-199B.1 P1: log stable two-point kinematics using coalesced sample
                       if (_tp.active && pid1 == _tp.id1 && pid2 == _tp.id2) {
                         final st = _tp.update(
@@ -1081,33 +2224,9 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                         );
                       }
                     }
-                    _bm200b8UpdateParallelVeto(
-                      p1: p1,
-                      p2: p2,
-                      tNowMs: nowMsAll,
-                    );
+                    // 9h is single source of truth; no legacy 8.x updates
                     // Compute per-frame guard state based on 9h entry time
-                    _par9eGuardActive =
-                        (_par9eEntryMs >= 0) &&
-                        ((nowMsAll - _par9eEntryMs) < _par9eEntryGuardMs);
-                    // [FREEZE] logging once per frame while active, and end when it stops
-                    if (_par9eGuardActive) {
-                      final int tFreeze = (_par9eEntryMs >= 0)
-                          ? (nowMsAll - _par9eEntryMs)
-                          : 0;
-                      debugPrint(
-                        '[FREEZE] active t=' +
-                            tFreeze.toString() +
-                            'ms → suppress {Apply, Locks}.',
-                      );
-                      _freezePrevActive = true;
-                    } else if (_freezePrevActive) {
-                      final int tFreeze = (_par9eEntryMs >= 0)
-                          ? (nowMsAll - _par9eEntryMs)
-                          : 0;
-                      debugPrint('[FREEZE] end t=' + tFreeze.toString() + 'ms');
-                      _freezePrevActive = false;
-                    }
+                    // Removed legacy per-veto FREEZE suppression block
                     // Feed engine (non-authoritative in this stage)
                     _bmEngine.onPointerPairUpdate(p1, p2, nowMsAll);
                   } else if (activeCount >= 2) {
@@ -1116,23 +2235,187 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                     pid2 = ids[1];
                     p1 = _activePointers[pid1]!;
                     p2 = _activePointers[pid2]!;
-                    sep = (p1 - p2).distance;
+                    // separation handled via sampler; local sep removed
                     // BM-200B.9f: emit coalesced two-finger sample and update 9e veto
                     final sample = _sampler9f.tryEmit(nowMsAll);
-                    if (sample != null) {
-                      // 9h compute first; single-source state for the rest of this frame
-                      _par9eState = _par9e.updateAndGet(
+                    if (_twoDown && sample != null) {
+                      // Provide viewport min before updating PAR (for absolute sep normalization)
+                      final double vmin = math.max(
+                        1.0,
+                        math.min(size.width, size.height),
+                      );
+                      _par9e.setViewportMin(vmin);
+                      // Ordered pipeline: PAR_FEED -> PARGATE -> APPLY_ZR -> VETO
+                      final ParState _psFrame2 = ensureParState(_gid);
+                      final result = _par9e.stepWithSample(
+                        ps: _psFrame2,
+                        p1_prev: sample.p1Prev,
+                        p2_prev: sample.p2Prev,
                         p1_now: sample.p1Now,
                         p2_now: sample.p2Now,
+                        twoDown: _twoDown,
                       );
+                      // Capture centroid prev/now + raw deltas for APPLY stage (unlocked path)
+                      _parCentroidPrev = Offset(
+                        (sample.p1Prev.dx + sample.p2Prev.dx) * 0.5,
+                        (sample.p1Prev.dy + sample.p2Prev.dy) * 0.5,
+                      );
+                      _parCentroidNow = Offset(
+                        (sample.p1Now.dx + sample.p2Now.dx) * 0.5,
+                        (sample.p1Now.dy + sample.p2Now.dy) * 0.5,
+                      );
+                      if (_parCentroidNow != null) {
+                        // --- Two-finger pan delta pipeline (locked path) ---
+                        final int nowMs = DateTime.now().millisecondsSinceEpoch;
+                        final bool freezeNow = _freezeActive;
+                        // On freeze end, guard-seed prev centroid if missing
+                        if (_freezePrev && !freezeNow) {
+                          _prevCpx ??= _parCentroidNow; // ensure no large jump
+                          _freezePrev = false;
+                        }
+                        // Raw delta (screen pixels)
+                        Offset panPxRaw = Offset.zero;
+                        if (_prevCpx != null) {
+                          panPxRaw = _parCentroidNow! - _prevCpx!;
+                        }
+                        _prevCpx = _parCentroidNow;
+                        // Low-pass to avoid annihilating small motion
+                        const double panAlpha = 0.25; // LP gain
+                        _panPxLP = Offset(
+                          _panPxLP.dx * (1 - panAlpha) + panPxRaw.dx * panAlpha,
+                          _panPxLP.dy * (1 - panAlpha) + panPxRaw.dy * panAlpha,
+                        );
+                        // Deadzone tiny jitter AFTER LP
+                        const double panEpsPx = 0.10;
+                        final Offset panPxUse = _panPxLP.distance < panEpsPx
+                            ? Offset.zero
+                            : _panPxLP;
+                        // Always publish to SM; it will apply only in Mode.pan
+                        _pendingPanDp += panPxUse; // accumulate this frame
+                        debugPrint(
+                          '[PAN] raw=' +
+                              panPxRaw.dx.toStringAsFixed(2) +
+                              ',' +
+                              panPxRaw.dy.toStringAsFixed(2) +
+                              ' lp=' +
+                              _panPxLP.dx.toStringAsFixed(2) +
+                              ',' +
+                              _panPxLP.dy.toStringAsFixed(2) +
+                              ' use=' +
+                              panPxUse.dx.toStringAsFixed(2) +
+                              ',' +
+                              panPxUse.dy.toStringAsFixed(2) +
+                              ' freeze=' +
+                              freezeNow.toString(),
+                        );
+                        // Update readiness & mode before decision (unlocked path)
+                        // _updateGateReadinessAndMode(_psFrame2, _psFrame2.ema.sepNow, kParMinSepPx); // helper removed
+                        final gate = GateDecision(
+                          mode: _psFrame2.deprecatedModeSnapshot,
+                          veto: result.veto,
+                          zoomReady: _psFrame2.zoomReady,
+                          rotateReady: _psFrame2.rotateReady,
+                          dLogLP: _psFrame2.dLogLP,
+                          dThetaLP: _psFrame2.dThetaLP,
+                          centroidW: screenToWorld(
+                            _parCentroidNow!,
+                            size,
+                            _pan,
+                            _scale,
+                            _rotation,
+                          ),
+                        );
+                        // SM heartbeat in unlocked path as well
+                        final _smGate2 = _smGateFromPar(
+                          _psFrame2,
+                          veto: result.veto,
+                        );
+                        final _smEst2 = _smEstimatesFromPipeline(
+                          dTheta: _psFrame2.dThetaLP,
+                          dLogSep: _psFrame2.dLogLP,
+                          dPan: _pendingPanDp,
+                        );
+                        _sm.onFrame(_smEst2, _smGate2, veto: result.veto);
+                        assert(() {
+                          debugPrint(
+                            '[SM] view-sync expected rot=' +
+                                (_sm.debugTotalRotRad?.toStringAsFixed(3) ??
+                                    'NA') +
+                                ' scale=' +
+                                ((_sm.debugTotalScale)?.toStringAsFixed(3) ??
+                                    'NA') +
+                                ' → rendered rot=' +
+                                _xform.rotRad.toStringAsFixed(3) +
+                                ' scale=' +
+                                _xform.scale.toStringAsFixed(3),
+                          );
+                          return true;
+                        }());
+                        assert(() {
+                          if (_psFrame2.rotateReady || _psFrame2.zoomReady) {
+                            debugPrint(
+                              '[SM] heartbeat mode=' +
+                                  _sm.mode.toString() +
+                                  ' rotReady=' +
+                                  _psFrame2.rotateReady.toString() +
+                                  ' zoomReady=' +
+                                  _psFrame2.zoomReady.toString(),
+                            );
+                          }
+                          return true;
+                        }());
+                        final nowMs2 = DateTime.now().millisecondsSinceEpoch;
+                        final _ = _bm199Gate?.telemetry(
+                          gate,
+                          freeze: _freezeActive,
+                          nowMs: nowMs2,
+                        );
+                        // Sanity asserts
+                        assert(
+                          !(gate.mode == 'pan' &&
+                              (_psFrame2.dLogLP.abs() > 0.02 ||
+                                  _psFrame2.dThetaLP.abs() > 0.05)),
+                          'Pan should not carry big zoom/rot deltas',
+                        );
+                        assert(
+                          !_freezeActive || gate.veto,
+                          'If FREEZE, we should be vetoing Apply',
+                        );
+                        if (!_freezeActive && !gate.veto) {
+                          final modeSnap = _psFrame2.deprecatedModeSnapshot;
+                          final dLogSnap = _psFrame2.dLogLP;
+                          final dThetaSnap = _psFrame2.dThetaLP;
+                          final panSnap = _pendingPanDp; // screen px
+                          final pivotSnapW = screenToWorld(
+                            _parCentroidNow!,
+                            size,
+                            _pan,
+                            _scale,
+                            _rotation,
+                          );
+                          final _ApplyDeltas deltas = _deltasFor(
+                            modeSnap,
+                            dLogSnap,
+                            dThetaSnap,
+                            panSnap,
+                          );
+                          _applyParGate(
+                            ps: _psFrame2,
+                            pivotWorld: pivotSnapW,
+                            deltas: deltas,
+                          );
+                        }
+                      }
+                      // deltas now read from ParState (psCurrent.dLogSep/dTheta)
+                      _par9eState = result.state;
                       _par9eDidComputeThisFrame = true;
-                      _currentParVeto = _par9eState!.parVeto;
+                      _currentParVeto = result.veto;
                       // Pre-veto shield for unlocked pair path
                       _par9eShieldActive =
                           (_par9eState!.frameValid &&
                           !_currentParVeto &&
                           _par9eState!.validN < 6 &&
-                          _par9eState!.cosParAvg >= 0.95);
+                          _par9eState!.cosParAvg >= 0.90);
                       // Capture invariants for this frame
                       _par9eLastGid = _par9eState!.gestureId;
                       _par9eLastSeq = _par9eState!.frameSeq;
@@ -1142,10 +2425,17 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                       // parVeto already reflected in _currentParVeto
                       // 9h rising edge → start guard window
                       if (!_par9ePrevVeto && _currentParVeto) {
-                        _par9eEntryMs = nowMsAll;
-                        debugPrint('[FREEZE] start parVeto=true');
+                        // Legacy per-veto freeze removed
                       }
                       _par9ePrevVeto = _currentParVeto;
+                      // Feed ZR latch from authoritative PAR state
+                      if (_par9eState!.frameValid) {
+                        _zrLatch.feed(
+                          _par9eState!.cosParAvg,
+                          _par9eState!.sepFracAvg,
+                          alpha: 0.25,
+                        );
+                      }
                       // BM-199B.1 P1: log two-point kinematics (unlocked case)
                       if (_tp.active && pid1 == _tp.id1 && pid2 == _tp.id2) {
                         final st = _tp.update(
@@ -1162,1521 +2452,12 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                         );
                       }
                     }
-                    _bm200b8UpdateParallelVeto(
-                      p1: p1,
-                      p2: p2,
-                      tNowMs: nowMsAll,
-                    );
+                    // 9h is single source of truth; no legacy 8.x updates
                     // Compute per-frame guard state based on 9h entry time
-                    _par9eGuardActive =
-                        (_par9eEntryMs >= 0) &&
-                        ((nowMsAll - _par9eEntryMs) < _par9eEntryGuardMs);
-                    // [FREEZE] logging once per frame while active, and end when it stops
-                    if (_par9eGuardActive) {
-                      final int tFreeze = (_par9eEntryMs >= 0)
-                          ? (nowMsAll - _par9eEntryMs)
-                          : 0;
-                      debugPrint(
-                        '[FREEZE] active t=' +
-                            tFreeze.toString() +
-                            'ms → suppress {Apply, Locks}.',
-                      );
-                      _freezePrevActive = true;
-                    } else if (_freezePrevActive) {
-                      final int tFreeze = (_par9eEntryMs >= 0)
-                          ? (nowMsAll - _par9eEntryMs)
-                          : 0;
-                      debugPrint('[FREEZE] end t=' + tFreeze.toString() + 'ms');
-                      _freezePrevActive = false;
-                    }
+                    // Removed legacy per-veto FREEZE suppression block
+                    // Feed engine (non-authoritative in this stage)
                     _bmEngine.onPointerPairUpdate(p1, p2, nowMsAll);
                   }
-                  // Pointer-based per-frame angle and deltas for gating
-                  // Rigid-fit rotation delta between previous and current pointer pairs
-                  double dThetaRigid = 0.0;
-                  // Keep normalized vector-based angle for diagnostics in later logs
-                  double dAnglePtrRaw = 0.0;
-                  //
-                  double zoomEvidence = 0.0; // |log(sep2/sep1)|
-                  // panEvidence magnitude available via meanD if needed for future diagnostics
-                  double nonPan = 0.0; // |diffΔ|
-                  // Centroid-residual instantaneous pan veto
-                  double residualFracInst = 0.0;
-                  bool panVeto = false;
-                  // Rigid diagnostics holders (for logs outside the inner block)
-                  double rigidSxLog = 0.0, rigidSyLog = 0.0;
-                  double r1LenLog = 0.0, r2LenLog = 0.0;
-                  bool rigidHave = false;
-                  if (p1 != null &&
-                      p2 != null &&
-                      _prevP1 != null &&
-                      _prevP2 != null) {
-                    final vPrev = _prevP2! - _prevP1!;
-                    final vNow = p2 - p1;
-                    final double lenPrev = vPrev.distance;
-                    final double lenNow = vNow.distance;
-                    if (lenPrev > 0 && lenNow > 0) {
-                      final vPrevN = Offset(
-                        vPrev.dx / lenPrev,
-                        vPrev.dy / lenPrev,
-                      );
-                      final vNowN = Offset(vNow.dx / lenNow, vNow.dy / lenNow);
-                      final double dot =
-                          vPrevN.dx * vNowN.dx + vPrevN.dy * vNowN.dy;
-                      final double cross =
-                          vPrevN.dx * vNowN.dy - vPrevN.dy * vNowN.dx;
-                      // Keep normalized-angle calc for diagnostics, but use rigid-fit below for evidence
-                      dAnglePtrRaw = math.atan2(cross, dot); // in (-pi, pi]
-                      // already wrapped (not used further)
-                      // BM-199B: verification of per-frame angle delta from raw (non-normalized) vectors
-                      // This should match the normalized computation since atan2(cross, dot) is scale-invariant
-                      if (_twoMode == TwoFingerMode.undecided) {
-                        final double dotRaw =
-                            vPrev.dx * vNow.dx + vPrev.dy * vNow.dy;
-                        final double crossRaw =
-                            vPrev.dx * vNow.dy - vPrev.dy * vNow.dx;
-                        final double dThetaRawFromRaw = math.atan2(
-                          crossRaw,
-                          dotRaw,
-                        );
-                        debugPrint(
-                          '[BM-199B θ] dotN=${dot.toStringAsFixed(6)} '
-                          'crossN=${cross.toStringAsFixed(6)} dθN=${dAnglePtrRaw.toStringAsFixed(5)} '
-                          'dot=${dotRaw.toStringAsFixed(1)} cross=${crossRaw.toStringAsFixed(1)} '
-                          'dθ=${dThetaRawFromRaw.toStringAsFixed(5)} '
-                          'diff=${(dThetaRawFromRaw - dAnglePtrRaw).abs().toStringAsFixed(6)}',
-                        );
-                      }
-                      // Rigid-fit rotation using centroided coordinates across both pointers
-                      final Offset a1 = _prevP1!;
-                      final Offset a2 = _prevP2!;
-                      final Offset b1 = p1;
-                      final Offset b2 = p2;
-                      final Offset aC = Offset(
-                        (a1.dx + a2.dx) * 0.5,
-                        (a1.dy + a2.dy) * 0.5,
-                      );
-                      final Offset bC = Offset(
-                        (b1.dx + b2.dx) * 0.5,
-                        (b1.dy + b2.dy) * 0.5,
-                      );
-                      final Offset a1c = a1 - aC, a2c = a2 - aC;
-                      final Offset b1c = b1 - bC, b2c = b2 - bC;
-                      final double Sx =
-                          a1c.dx * b1c.dx +
-                          a1c.dy * b1c.dy +
-                          a2c.dx * b2c.dx +
-                          a2c.dy * b2c.dy;
-                      final double Sy =
-                          a1c.dx * b1c.dy -
-                          a1c.dy * b1c.dx +
-                          a2c.dx * b2c.dy -
-                          a2c.dy * b2c.dx;
-                      dThetaRigid = math.atan2(Sy, Sx);
-                      rigidSxLog = Sx;
-                      rigidSyLog = Sy;
-
-                      final double sepPrev = _prevSep ?? lenPrev;
-                      final double sepNow = lenNow;
-                      if (sepPrev > 0 && sepNow > 0) {
-                        zoomEvidence = (math.log(sepNow / sepPrev)).abs();
-                      }
-                      final d1 = p1 - _prevP1!;
-                      final d2 = p2 - _prevP2!;
-                      // final meanD = Offset((d1.dx + d2.dx) / 2, (d1.dy + d2.dy) / 2);
-                      final diffD = Offset(d1.dx - d2.dx, d1.dy - d2.dy);
-                      // mean pan magnitude available if needed: meanD.distance
-                      nonPan = diffD.distance;
-                      // BM-200B.9d — Rigid residual veto (instantaneous)
-                      final Offset dAvg = Offset(
-                        (d1.dx + d2.dx) * 0.5,
-                        (d1.dy + d2.dy) * 0.5,
-                      );
-                      final Offset r1 = d1 - dAvg;
-                      final Offset r2 = d2 - dAvg;
-                      final double r1Len = r1.distance;
-                      final double r2Len = r2.distance;
-                      r1LenLog = r1Len;
-                      r2LenLog = r2Len;
-                      final double sepSafe = math.max(sep, 48.0);
-                      residualFracInst = (r1Len + r2Len) / sepSafe;
-                      // Hysteresis: enter at ≥0.12, exit at ≤0.08
-                      if (!_residualVetoLatched &&
-                          residualFracInst >= _residVetoEnter) {
-                        _residualVetoLatched = true;
-                      } else if (_residualVetoLatched &&
-                          residualFracInst <= _residVetoExit) {
-                        _residualVetoLatched = false;
-                      }
-                      panVeto = _residualVetoLatched;
-                      rigidHave = true;
-
-                      // BM-199B.4: legacy inputs for windowed parallel-pan veto (kept for possible future use)
-                      final double mag1 = d1.distance;
-                      final double mag2 = d2.distance;
-                      final double den = (mag1 * mag2) + 1e-6;
-                      final double cosParInst = (mag1 > 0 && mag2 > 0)
-                          ? ((d1.dx * d2.dx + d1.dy * d2.dy) / den)
-                          : 1.0; // treat zero move as parallel-ish
-                      final double sepFracInst =
-                          (_prevSep != null && _prevSep! > 0)
-                          ? ((sep - _prevSep!).abs() / _prevSep!)
-                          : 0.0;
-                      final double mMin = _bm199Gate?.p.mMin ?? 0.10;
-                      final bool enoughInst = (mag1 >= mMin && mag2 >= mMin);
-                      // For legacy buffer metrics, reuse the instantaneous residual
-                      // Add to veto buffer and prune by window
-                      final Duration frameTsV =
-                          SchedulerBinding.instance.currentSystemFrameTimeStamp;
-                      final int nowMsV = frameTsV.inMicroseconds > 0
-                          ? frameTsV.inMilliseconds
-                          : DateTime.now().millisecondsSinceEpoch;
-                      final int vetoWin = _bm199Gate?.p.vetoWindowMs ?? 120;
-                      _vetoBuf.add(
-                        _VetoSample(
-                          nowMsV,
-                          cosParInst,
-                          sepFracInst,
-                          residualFracInst,
-                          enoughInst ? 1.0 : 0.0,
-                        ),
-                      );
-                      final int cutoff = nowMsV - vetoWin;
-                      while (_vetoBuf.isNotEmpty && _vetoBuf.first.t < cutoff) {
-                        _vetoBuf.removeAt(0);
-                      }
-                      // legacy parallel-like metrics computed but not used
-                      // residual average now stored in residFracAvgLast for logs
-                    } else {
-                      dAnglePtrRaw = 0.0;
-                    }
-                  }
-                  // Diagnostics accumulators for this frame (no behavior change)
-                  double diagPinErrPre = 0.0;
-                  double diagPinErrPost = 0.0;
-                  double diagClampDx = 0.0;
-                  double diagClampDy = 0.0;
-                  double diagPivotMismatchPx = 0.0;
-
-                  // Incremental deltas vs previous raws (Flutter values)
-                  final double dScaleInc =
-                      (rawScale / _prevRawScale) - 1.0; // +0.01 = +1%
-                  // final double dAngleIncRawFlutter = rawAngle - _prevRawAngle;
-                  // Wrapped flutter angle inc (kept for potential diagnostics)
-                  // final double _dAngleIncFlutter = _wrapPi(dAngleIncRawFlutter);
-                  // Prefer rigid-fit wrapped angle for evidence and apply, with per-frame clamp
-                  double dAngleInc = dThetaRigid;
-                  final double clampTheta = _bm199Gate?.p.dThetaClamp ?? 0.12;
-                  if (dAngleInc > clampTheta) dAngleInc = clampTheta;
-                  if (dAngleInc < -clampTheta) dAngleInc = -clampTheta;
-                  final Offset dp2 = focal - _prevFocal; // two-finger pan delta
-
-                  // Evidence: no smoothing before lock; apply minSep gate and pan gate dominance
-                  _eScale = dScaleInc.abs();
-                  // Minimum separation gate (logical px)
-                  final double sepPx = sep; // logical px
-                  final double minSepPx = 64.0; // logical threshold
-                  final bool sepOk = sepPx >= minSepPx;
-                  if (!sepOk) {
-                    debugPrint(
-                      '[BM-200B.9c GATE] blocked=sep sep='
-                      '${sepPx.toStringAsFixed(1)} min=${minSepPx.toStringAsFixed(0)}',
-                    );
-                  }
-                  // With gate forced open, evidence is always the raw |dθ| per frame
-                  double angleEvidence = dAngleInc.abs();
-                  // Rotate dominance: rot > rotHys and rot > 2×max(zoomEvidence, nonPan/sep)
-                  final double nonPanNorm = (sep > 0) ? (nonPan / sep) : nonPan;
-                  final double competitor = math.max(zoomEvidence, nonPanNorm);
-                  final bool rotDominates = angleEvidence > (2.0 * competitor);
-                  _eAngle = angleEvidence;
-
-                  // BM-200B.9h APPLY: Early hard gate before any accumulators/locks
-                  // Reset post office APPLY for this frame
-                  _postApplyPending = false;
-                  bool skipLockThisFrame = false;
-                  // ORDERING: ensure 9h compute has occurred this frame before APPLY
-                  if (!_par9eDidComputeThisFrame && p1 != null && p2 != null) {
-                    // Force a one-off compute to uphold ordering guarantees
-                    _par9eState = _par9e.updateAndGet(p1_now: p1, p2_now: p2);
-                    _currentParVeto = _par9eState!.parVeto;
-                    // Capture invariants for this frame (since we computed here)
-                    _par9eLastGid = _par9eState!.gestureId;
-                    _par9eLastSeq = _par9eState!.frameSeq;
-                    _par9eLastVer = _par9eState!.stateVersion;
-                    _par9eLastCos = _par9eState!.cosParAvg;
-                    _par9eLastSep = _par9eState!.sepFracAvg;
-                    _par9eDidComputeThisFrame = true;
-                    debugPrint(
-                      '[BM-200B.9h ORDER_FIX] forced PAR compute before APPLY',
-                    );
-                  } else if (!_par9eDidComputeThisFrame) {
-                    debugPrint(
-                      '[BM-200B.9h ORDER_BUG] cannot compute PAR before APPLY: pointers missing',
-                    );
-                  }
-                  if (_currentParVeto ||
-                      _par9eGuardActive ||
-                      _par9eShieldActive) {
-                    // Zero per-frame deltas for this frame
-                    angleEvidence = 0.0;
-                    _eAngle = 0.0;
-                    _eScale = 0.0;
-                    // Also force incremental deltas to zero for logs/peaks
-                    dAngleInc = 0.0;
-                    // dScaleInc was final; treat as zero for any downstream usage by _eScale already set
-                    // Prevent accumulator growth; let window decay prune old samples
-                    double raBefore = _bm199Gate?.rotAccum ?? 0.0;
-                    double zaBefore = _bm199Gate?.zoomAccum ?? 0.0;
-                    if (_bm199Gate != null) {
-                      _bm199Gate!.tickNoGrowth(nowMs: nowMsAll, sepPx: sep);
-                    }
-                    double raAfter = _bm199Gate?.rotAccum ?? raBefore;
-                    double zaAfter = _bm199Gate?.zoomAccum ?? zaBefore;
-                    // Log the application of the veto in the requested format
-                    debugPrint(
-                      '[BM-200B.9h APPLY] parVeto=true → dθ=0 dScale=0 '
-                      '(rotAccum: ${raBefore.toStringAsFixed(3)}→${raAfter.toStringAsFixed(3)}, '
-                      'zoomAccum: ${zaBefore.toStringAsFixed(3)}→${zaAfter.toStringAsFixed(3)})',
-                    );
-                    // Defer concise APPLY print until after GATE
-                    _postApplyPending = true;
-                    _postApplyPar = true;
-                    _postApplyDAngle = 0.0;
-                    _postApplyDScale = 0.0;
-                    skipLockThisFrame = true;
-                  }
-
-                  // BM-197: Evidence logging while undecided
-                  if (_twoMode == TwoFingerMode.undecided) {
-                    // Per-undecided-frame rigid diagnostics
-                    if (rigidHave) {
-                      debugPrint(
-                        '[BM-199 RIGID] Sx=${rigidSxLog.toStringAsFixed(4)} Sy=${rigidSyLog.toStringAsFixed(4)} '
-                        'dθ=${dThetaRigid.toStringAsFixed(5)} |r1|=${r1LenLog.toStringAsFixed(3)} '
-                        '|r2|=${r2LenLog.toStringAsFixed(3)} '
-                        'residualFrac=${residualFracInst.toStringAsFixed(3)} panVeto=${(panVeto).toString()}',
-                      );
-                    }
-                    final nowEv = DateTime.now();
-                    final dwellElapsed = nowEv
-                        .difference(_lastEvidenceTime)
-                        .inMilliseconds;
-                    debugPrint(
-                      '[BM-197 S] rotEv=${angleEvidence.toStringAsFixed(4)} '
-                      'zoomEv=${zoomEvidence.toStringAsFixed(4)} nonPan=${nonPan.toStringAsFixed(4)} '
-                      'nonPanNorm=${(sep > 0 ? (nonPan / sep) : nonPan).toStringAsFixed(4)} '
-                      'sep=${sep.toStringAsFixed(1)} sepOk=$sepOk',
-                    );
-                    final bool zoomDomCand =
-                        _eScale > kZoomHys && _eScale > _eAngle && sepOk;
-                    final bool rotDomCand =
-                        angleEvidence > kRotHysRad && rotDominates && sepOk;
-                    debugPrint(
-                      '  thr rotHys=${kRotHysRad.toStringAsFixed(3)} zoomHys=${kZoomHys.toStringAsFixed(3)} '
-                      'minSep=${bmMinSepPx.toStringAsFixed(0)} dwellMs=$kDwellMs dwellElapsed=${dwellElapsed}ms '
-                      'cand zoomDom=$zoomDomCand rotDom=$rotDomCand',
-                    );
-                    if (angleEvidence > kRotHysRad && sepOk && !rotDominates) {
-                      debugPrint(
-                        '  [BM-197 B] rotate-blocked: dominance failed (competitor='
-                        '${competitor.toStringAsFixed(4)})',
-                      );
-                    }
-                    // BM-199 removed per request
-                  }
-
-                  // Peak tracking for exit logs
-                  _peakScaleDelta = math.max(
-                    _peakScaleDelta,
-                    (rawScale - 1.0).abs(),
-                  );
-                  _cumAngleTotal += dAngleInc;
-                  _peakAngle = math.max(_peakAngle, _cumAngleTotal.abs());
-
-                  // Decide/maintain mode with dwell/cooldown and optional single switch
-                  final now = DateTime.now();
-                  final bool cooled =
-                      now.difference(_lockTime).inMilliseconds >= kCooldownMs;
-                  final bool seqCooled =
-                      now.difference(_lastSwitchTime).inMilliseconds >=
-                      kSeqCooldownMs;
-                  var decided = _twoMode;
-                  String? reason;
-
-                  if (_twoMode == TwoFingerMode.undecided) {
-                    // BM-199: maintain sliding accumulators and suggest lock; also disable 2-finger pan while undecided for Test B
-                    // While parVeto=true, emit a once-per-second summary showing accumulators do not grow
-                    if (_currentParVeto) {
-                      final now9g = DateTime.now();
-                      if (_bm200b9gLastSum == null ||
-                          now9g.difference(_bm200b9gLastSum!).inMilliseconds >=
-                              1000) {
-                        _bm200b9gLastSum = now9g;
-                        final double ra = _bm199Gate?.rotAccum ?? 0.0;
-                        final double za = _bm199Gate?.zoomAccum ?? 0.0;
-                        debugPrint(
-                          '[BM-200B.9g SUM] rotAccum=${ra.toStringAsFixed(3)} '
-                          'zoomAccum=${za.toStringAsFixed(3)} (should stay < 0.1)',
-                        );
-                      }
-                    }
-                    if (!skipLockThisFrame &&
-                        _bm199Gate != null &&
-                        pid1 != null &&
-                        pid2 != null) {
-                      // ORDERING: ensure 9h compute has occurred this frame before feeding BM-199
-                      if (!_par9eDidComputeThisFrame &&
-                          p1 != null &&
-                          p2 != null) {
-                        _par9eState = _par9e.updateAndGet(
-                          p1_now: p1,
-                          p2_now: p2,
-                        );
-                        _currentParVeto = _par9eState!.parVeto;
-                        // Pre-veto shield in ORDER_FIX path prior to GATE
-                        _par9eShieldActive =
-                            (_par9eState!.frameValid &&
-                            !_currentParVeto &&
-                            _par9eState!.validN < 6 &&
-                            _par9eState!.cosParAvg >= 0.95);
-                        _par9eLastGid = _par9eState!.gestureId;
-                        _par9eLastSeq = _par9eState!.frameSeq;
-                        _par9eLastVer = _par9eState!.stateVersion;
-                        _par9eLastCos = _par9eState!.cosParAvg;
-                        _par9eLastSep = _par9eState!.sepFracAvg;
-                        _par9eDidComputeThisFrame = true;
-                        debugPrint(
-                          '[BM-200B.9h ORDER_FIX] forced PAR compute before GATE',
-                        );
-                      } else if (!_par9eDidComputeThisFrame) {
-                        debugPrint(
-                          '[BM-200B.9h ORDER_BUG] cannot compute PAR before GATE: pointers missing',
-                        );
-                      }
-                      // Capture accumulators BEFORE feeding this frame (for APPLY log)
-                      final double raBeforeApply = _bm199Gate!.rotAccum;
-                      final double zaBeforeApply = _bm199Gate!.zoomAccum;
-                      final pair = (pid1, pid2);
-                      if (_bm199PairIds == null || _bm199PairIds != pair) {
-                        _bm199Gate!.reset();
-                        _bm199PairIds = pair;
-                      }
-                      // Per-pointer deltas (screen px)
-                      double dx1 = 0, dy1 = 0, dx2 = 0, dy2 = 0;
-                      if (p1 != null && _prevP1 != null) {
-                        final d1 = p1 - _prevP1!;
-                        dx1 = d1.dx;
-                        dy1 = d1.dy;
-                      }
-                      if (p2 != null && _prevP2 != null) {
-                        final d2 = p2 - _prevP2!;
-                        dx2 = d2.dx;
-                        dy2 = d2.dy;
-                      }
-                      // Use the same per-frame monotonic timestamp computed above
-                      final int nowMs = nowMsAll;
-                      final lock = _bm199Gate!.update(
-                        nowMs: nowMs,
-                        sepPx: sep,
-                        dThetaWrapped: dAnglePtrRaw,
-                        dx1: dx1,
-                        dy1: dy1,
-                        dx2: dx2,
-                        dy2: dy2,
-                      );
-                      // Unified APPLY log (non-veto path): after accumulators update
-                      final double raAfterApply = _bm199Gate!.rotAccum;
-                      final double zaAfterApply = _bm199Gate!.zoomAccum;
-                      debugPrint(
-                        '[BM-200B.9h APPLY] parVeto=false → dθ=' +
-                            dAngleInc.toStringAsFixed(3) +
-                            ' dScale=' +
-                            dScaleInc.toStringAsFixed(3) +
-                            ' (rotAccum: ' +
-                            raBeforeApply.toStringAsFixed(3) +
-                            '→' +
-                            raAfterApply.toStringAsFixed(3) +
-                            ', zoomAccum: ' +
-                            zaBeforeApply.toStringAsFixed(3) +
-                            '→' +
-                            zaAfterApply.toStringAsFixed(3) +
-                            ')',
-                      );
-                      // Defer concise APPLY print until after GATE
-                      _postApplyPending = true;
-                      _postApplyPar = false;
-                      _postApplyDAngle = dAngleInc;
-                      _postApplyDScale = dScaleInc;
-                      // BM-200B.9a θ: sanity log when twist is present but no rotate lock
-                      final double dThetaAbs = dAnglePtrRaw.abs();
-                      if (lock != BM199Lock.rotate &&
-                          sepOk &&
-                          dThetaAbs > 0.02) {
-                        debugPrint(
-                          '[BM-200B.9a θ] dθ=${dAnglePtrRaw.toStringAsFixed(4)} '
-                          'rotA=${_bm199Gate!.rotAccum.toStringAsFixed(3)}',
-                        );
-                      }
-                      // Per-frame BM-199 state log
-                      // Compute normalized, capped nonPanEv for logging
-                      double nonPanEvPrint = 0.0;
-                      if (p1 != null &&
-                          _prevP1 != null &&
-                          p2 != null &&
-                          _prevP2 != null) {
-                        final Offset d1p = p1 - _prevP1!;
-                        final Offset d2p = p2 - _prevP2!;
-                        final double sepSafe = math.max(sep, 48.0);
-                        nonPanEvPrint = (d1p - d2p).distance / sepSafe;
-                        if (nonPanEvPrint > 0.06) nonPanEvPrint = 0.06;
-                      }
-                      debugPrint(
-                        '[BM-199 S] rotEv=${dAngleInc.abs().toStringAsFixed(4)} '
-                        'zoomEv=${zoomEvidence.toStringAsFixed(4)} '
-                        'nonPan=${nonPanEvPrint.toStringAsFixed(4)} '
-                        'rotAccum=${_bm199Gate!.rotAccum.toStringAsFixed(4)} '
-                        'zoomAccum=${_bm199Gate!.zoomAccum.toStringAsFixed(4)} '
-                        'nonPanAccum=${_bm199Gate!.nonPanAccum.toStringAsFixed(4)} '
-                        'sep=${sep.toStringAsFixed(1)} sepOk=${(sep >= bmMinSepPx)} note=undecided',
-                      );
-
-                      // BM-199 D: dominance diagnostic (rotate comparator)
-                      final double kDominanceCfg =
-                          _bm199Gate?.p.kDominance ?? 1.30;
-                      const double kNonPanW = 0.60;
-                      final double rotA = _bm199Gate!.rotAccum;
-                      final double zoomA = _bm199Gate!.zoomAccum;
-                      final double nonPanA = _bm199Gate!.nonPanAccum;
-                      final double comp = math.max(zoomA, nonPanA * kNonPanW);
-                      final bool dominanceOK = rotA >= (kDominanceCfg * comp);
-                      final bool absTwistOK = rotA >= (_bm199Gate!.p.minRotAbs);
-                      final bool antiReady = _par9eState?.antiParReady ?? false;
-                      final bool wantRotate = dominanceOK && antiReady;
-                      // Use centroid-residual instantaneous pan veto
-                      // Combine centroid-residual veto with BM-200B.8 EMA-based parallel veto
-                      // NA hygiene: consider 9h veto only when this frame is computed (frameValid)
-                      final bool par9eKnown =
-                          (_par9eState != null) && _par9eState!.frameValid;
-                      final bool vetoActive =
-                          panVeto ||
-                          (par9eKnown && _currentParVeto) ||
-                          _par9eGuardActive;
-                      // Split into three lines with explicit prefixes so filters don't hide continuation lines
-                      debugPrint(
-                        '[BM-199 D1] rot=${rotA.toStringAsFixed(2)} zoom=${zoomA.toStringAsFixed(2)} '
-                        'nonPan=${nonPanA.toStringAsFixed(2)} comp=${comp.toStringAsFixed(2)} '
-                        'k=${kDominanceCfg.toStringAsFixed(2)}',
-                      );
-                      debugPrint(
-                        '[BM-199 D2] residualFrac=${residualFracInst.toStringAsFixed(3)} '
-                        'panVeto=${vetoActive.toString()} sep=${sep.toStringAsFixed(1)}',
-                      );
-                      debugPrint(
-                        '[BM-199 D3] residualEnter=${_residVetoEnter.toStringAsFixed(3)} '
-                        'residualExit=${_residVetoExit.toStringAsFixed(3)} '
-                        'absTwistOK=${absTwistOK.toString()} antiParReady=${antiReady.toString()} '
-                        'wantRotate=${wantRotate.toString()} veto=${vetoActive.toString()}',
-                      );
-                      if (_bm199PrevVeto == null ||
-                          _bm199PrevVeto != vetoActive) {
-                        debugPrint(
-                          '[BM-199 VETO] panVeto=${vetoActive.toString()} '
-                          'residualFrac=${residualFracInst.toStringAsFixed(3)} '
-                          'enter=${_residVetoEnter.toStringAsFixed(2)} exit=${_residVetoExit.toStringAsFixed(2)}',
-                        );
-                        _bm199PrevVeto = vetoActive;
-                      }
-
-                      if ((lock == BM199Lock.rotate ||
-                          lock == BM199Lock.zoom)) {
-                        final nowIso = DateTime.now().toIso8601String();
-                        final bool veto = vetoActive;
-                        // Enforce minimum rate thresholds (rad/s, |log|/s)
-                        final int winMs = _bm199Gate?.p.windowMs ?? 350;
-                        final double sec = winMs / 1000.0;
-                        final double rotRate =
-                            (_bm199Gate?.rotAccum ?? 0.0) / sec;
-                        final double zoomRate =
-                            (_bm199Gate?.zoomAccum ?? 0.0) / sec;
-                        final double minRotRate =
-                            _bm199Gate?.p.minRotRate ?? 0.20;
-                        final double minZoomRate =
-                            _bm199Gate?.p.minZoomRate ?? 0.20;
-                        // BM-200B.9d — Deadband for tiny rotation rates
-                        const double rotDeadband = 0.020; // rad/s proxy
-                        final double rotRateDb = (rotRate < rotDeadband)
-                            ? 0.0
-                            : rotRate;
-                        final bool rateOkRotate = rotRateDb >= minRotRate;
-                        final bool rateOkZoom = zoomRate >= minZoomRate;
-                        final bool antiReadyEnter =
-                            _par9eState?.antiParReady ?? false;
-                        final String enterLabel = veto
-                            ? (lock == BM199Lock.rotate
-                                  ? 'Rotate(cand,veto)'
-                                  : 'Zoom(cand,veto)')
-                            : (lock == BM199Lock.rotate ? '→Rotate' : '→Zoom');
-                        debugPrint(
-                          '[BM-199 E] ' +
-                              enterLabel +
-                              ' '
-                                  'enter=$nowIso sep=${sep.toStringAsFixed(1)} '
-                                  'rotAccum=${_bm199Gate!.rotAccum.toStringAsFixed(3)} '
-                                  'zoomAccum=${_bm199Gate!.zoomAccum.toStringAsFixed(3)} '
-                                  'nonPanAccum=${_bm199Gate!.nonPanAccum.toStringAsFixed(3)} '
-                                  'k=${_bm199Gate!.p.kDominance.toStringAsFixed(2)} '
-                                  'veto=$veto antiParReady=${antiReadyEnter.toString()} rotRate=${rotRate.toStringAsFixed(2)} '
-                                  'zoomRate=${zoomRate.toStringAsFixed(2)}',
-                        );
-                        // Force the existing decision to lock immediately per BM-199 unless vetoed by parallel-like pan
-                        if (!veto &&
-                            ((lock != BM199Lock.rotate) || rateOkRotate) &&
-                            ((lock != BM199Lock.zoom) || rateOkZoom)) {
-                          // BM-200B.6: mirror FarmView lock log
-                          final bool sepOk = sep >= bmMinSepPx;
-                          final double sec =
-                              (_bm199Gate?.p.windowMs ?? 350) / 1000.0;
-                          final double rotRateDbg =
-                              (_bm199Gate?.rotAccum ?? 0.0) / sec;
-                          final double zoomRateDbg =
-                              (_bm199Gate?.zoomAccum ?? 0.0) / sec;
-                          debugPrint(
-                            '[BM-200B.6] →lock ' +
-                                (lock == BM199Lock.rotate ? 'Rotate' : 'Zoom') +
-                                ' at (' +
-                                focal.dx.toStringAsFixed(0) +
-                                ',' +
-                                focal.dy.toStringAsFixed(0) +
-                                ') sep=' +
-                                sep.toStringAsFixed(1) +
-                                ' sepOK=' +
-                                sepOk.toString() +
-                                ' rotA=' +
-                                (_bm199Gate!.rotAccum).toStringAsFixed(3) +
-                                ' zoomA=' +
-                                (_bm199Gate!.zoomAccum).toStringAsFixed(3) +
-                                ' rotRate=' +
-                                rotRateDbg.toStringAsFixed(2) +
-                                ' zoomRate=' +
-                                zoomRateDbg.toStringAsFixed(2),
-                          );
-                          decided = (lock == BM199Lock.rotate)
-                              ? TwoFingerMode.rotate
-                              : TwoFingerMode.zoom;
-                          reason = lock == BM199Lock.rotate
-                              ? 'BM-199 accumulate rotate'
-                              : 'BM-199 accumulate zoom';
-                        }
-                      }
-                    }
-                    // Disable 2-finger pan while undecided (BM-199 requirement for clean Test B)
-                    // No pan injection here.
-                    final bool zoomDom =
-                        _eScale > kZoomHys && _eScale > _eAngle && sepOk;
-                    final bool rotDom =
-                        _eAngle > kRotHysRad && rotDominates && sepOk;
-                    // BM-200B.7: gate-reason log mirror (FarmView)
-                    final int nowMsGate = DateTime.now().millisecondsSinceEpoch;
-                    final double secGate =
-                        (_bm199Gate?.p.windowMs ?? 350) / 1000.0;
-                    final double rotRateGate =
-                        (_bm199Gate?.rotAccum ?? 0.0) / secGate;
-                    // BM-200B.9d — Deadband for tiny rotation rates
-                    const double rotDeadband = 0.020; // rad/s proxy
-                    final double rotRateDbGate = (rotRateGate < rotDeadband)
-                        ? 0.0
-                        : rotRateGate;
-                    final double zoomRateGate =
-                        (_bm199Gate?.zoomAccum ?? 0.0) / secGate;
-                    final bool anyGate = rotDom || zoomDom;
-                    if (((_par9eState?.frameValid ?? false) &&
-                            _currentParVeto) ||
-                        _par9eShieldActive ||
-                        _par9eGuardActive ||
-                        !anyGate) {
-                      _bm200bGateOnSinceMs = -1;
-                      _bm200bGateRotate = null;
-                    } else {
-                      final bool gateNowRotate = rotDom || (rotDom && zoomDom);
-                      if (_bm200bGateRotate == null ||
-                          _bm200bGateRotate != gateNowRotate) {
-                        _bm200bGateRotate = gateNowRotate;
-                        _bm200bGateOnSinceMs = nowMsGate;
-                      }
-                    }
-                    final int dwellMs = (_bm200bGateOnSinceMs < 0)
-                        ? 0
-                        : (nowMsGate - _bm200bGateOnSinceMs);
-                    debugPrint(
-                      '[BM-200B.7 GATE] sepOK=' +
-                          sepOk.toString() +
-                          ' sep=' +
-                          sep.toStringAsFixed(1) +
-                          ' parVeto=' +
-                          (((_par9eState != null) && _par9eState!.frameValid)
-                              ? _currentParVeto.toString()
-                              : 'NA') +
-                          ' cosParAvg=' +
-                          ((_par9eState == null ||
-                                  (_par9eState!.validN < 2) ||
-                                  !(_par9eState!.frameValid))
-                              ? 'NA'
-                              : _par9eState!.cosParAvg.toStringAsFixed(3)) +
-                          ' sepFracAvg=' +
-                          ((_par9eState == null ||
-                                  (_par9eState!.validN < 2) ||
-                                  !(_par9eState!.frameValid))
-                              ? 'NA'
-                              : _par9eState!.sepFracAvg.toStringAsFixed(3)) +
-                          ' veto9d=' +
-                          _parVeto9d.toString() +
-                          ' rotA=' +
-                          (_bm199Gate?.rotAccum ?? 0.0).toStringAsFixed(3) +
-                          ' rotRate=' +
-                          rotRateGate.toStringAsFixed(2) +
-                          ' zoomA=' +
-                          (_bm199Gate?.zoomAccum ?? 0.0).toStringAsFixed(3) +
-                          ' zoomRate=' +
-                          zoomRateGate.toStringAsFixed(2) +
-                          ' dwell=' +
-                          dwellMs.toString() +
-                          'ms' +
-                          ' gid=' +
-                          (_par9eState == null
-                              ? 'NA'
-                              : _par9eState!.gestureId.toString()) +
-                          ' seq=' +
-                          (_par9eState == null
-                              ? 'NA'
-                              : _par9eState!.frameSeq.toString()) +
-                          ' ver=' +
-                          (_par9eState == null
-                              ? 'NA'
-                              : _par9eState!.stateVersion.toString()) +
-                          ' par=' +
-                          _currentParVeto.toString(),
-                    );
-                    // One-screen verification concise GATE line (after PAR)
-                    debugPrint(
-                      '[GATE] gestureId=' +
-                          _par9eLastGid.toString() +
-                          ' frameSeq=' +
-                          _par9eLastSeq.toString() +
-                          ' stateVersion=' +
-                          _par9eLastVer.toString() +
-                          ' parVeto=' +
-                          (((_par9eState != null) && _par9eState!.frameValid)
-                              ? _currentParVeto.toString()
-                              : 'NA') +
-                          ' cosParAvg=' +
-                          (((_par9eState == null) ||
-                                  !_par9eState!.frameValid ||
-                                  (_par9eState!.validN < 2))
-                              ? 'NA'
-                              : _par9eLastCos.toStringAsFixed(3)),
-                    );
-                    // One-screen verification concise APPLY line (after GATE)
-                    if (_postApplyPending) {
-                      debugPrint(
-                        '[APPLY] parVeto=' +
-                            (_postApplyPar ? 'true' : 'false') +
-                            ' → dθ=' +
-                            _postApplyDAngle.toStringAsFixed(3) +
-                            ' dScale=' +
-                            _postApplyDScale.toStringAsFixed(3),
-                      );
-                      _postApplyPending = false;
-                    }
-                    if (zoomDom || rotDom) {
-                      // Verify single-source invariants before attempting any lock
-                      bool stateOk = true;
-                      if (_par9eState != null) {
-                        final s = _par9eState!;
-                        final bool idOk = s.gestureId == _par9eLastGid;
-                        final bool seqOk = s.frameSeq == _par9eLastSeq;
-                        final bool verOk = s.stateVersion == _par9eLastVer;
-                        if (!(idOk && seqOk && verOk)) {
-                          debugPrint(
-                            '[BM-200B.9h STATE_MISMATCH] gate gid=${s.gestureId} seq=${s.frameSeq} ver=${s.stateVersion} '
-                            'lastPAR gid=${_par9eLastGid} seq=${_par9eLastSeq} ver=${_par9eLastVer}',
-                          );
-                          stateOk = false;
-                        } else {
-                          final double cosGate = s.cosParAvg;
-                          if ((cosGate - _par9eLastCos).abs() > 0.02) {
-                            debugPrint(
-                              '[BM-200B.9h COS_DIVERGE] gid=${s.gestureId} seq=${s.frameSeq} '
-                              'cosGate=${cosGate.toStringAsFixed(3)} cosPAR=${_par9eLastCos.toStringAsFixed(3)}',
-                            );
-                            stateOk = false;
-                          }
-                        }
-                      }
-                      if (!stateOk) {
-                        // Abort any lock attempt this frame
-                        _lastEvidenceTime = DateTime.now();
-                      } else {
-                        // Apply combined parallel veto (EMA + centroid residual)
-                        // Include freeze window in veto so BM-199 lock layer is fully suppressed
-                        final bool par9eKnownHere =
-                            (_par9eState != null) && _par9eState!.frameValid;
-                        final bool veto =
-                            panVeto ||
-                            (par9eKnownHere && _currentParVeto) ||
-                            _par9eGuardActive ||
-                            _par9eShieldActive;
-                        if (veto) {
-                          // Post office visibility: explicit reason line
-                          final bool vetoByFreeze = _par9eGuardActive;
-                          final bool vetoByPar =
-                              par9eKnownHere && _currentParVeto;
-                          final bool vetoByShield = _par9eShieldActive;
-                          if (vetoByFreeze) {
-                            final int elapsed = (_par9eEntryMs >= 0)
-                                ? (DateTime.now().millisecondsSinceEpoch -
-                                      _par9eEntryMs)
-                                : 0;
-                            final int left = (_par9eEntryGuardMs - elapsed)
-                                .clamp(0, _par9eEntryGuardMs);
-                            debugPrint(
-                              '[GATE] skipped lock: reason=freeze (' +
-                                  left.toString() +
-                                  'ms left)',
-                            );
-                          }
-                          if (vetoByPar) {
-                            debugPrint('[GATE] skipped lock: reason=parVeto');
-                          }
-                          if (vetoByShield) {
-                            debugPrint(
-                              '[GATE] skipped lock: reason=preVetoShield',
-                            );
-                          }
-                          debugPrint(
-                            '[BM-200B.9c GATE] blocked=parallel cosPar=' +
-                                (par9eKnownHere
-                                    ? _par9eLastCos.toStringAsFixed(3)
-                                    : 'NA') +
-                                ' sepFrac=' +
-                                _par9eLastSep.toStringAsFixed(3) +
-                                ' gid=' +
-                                _par9eLastGid.toString() +
-                                ' seq=' +
-                                _par9eLastSeq.toString() +
-                                ' ver=' +
-                                _par9eLastVer.toString() +
-                                ' veto9e=' +
-                                (par9eKnownHere
-                                    ? _currentParVeto.toString()
-                                    : 'NA') +
-                                ' veto9d=' +
-                                _parVeto9d.toString(),
-                          );
-                          // Stay undecided; reset dwell timer
-                          _lastEvidenceTime = now;
-                        } else if (now
-                                .difference(_lastEvidenceTime)
-                                .inMilliseconds >=
-                            kDwellMs) {
-                          // After dwell, require minimum rates and decide with tie-breaker
-                          final double minRotRate =
-                              _bm199Gate?.p.minRotRate ?? 0.20;
-                          final double minZoomRate =
-                              _bm199Gate?.p.minZoomRate ?? 0.20;
-                          final bool wantRotate =
-                              rotDom &&
-                              (rotRateDbGate >= minRotRate) &&
-                              sepOk &&
-                              ((_par9eState != null && _par9eState!.frameValid)
-                                  ? (_par9eState!.antiParReady)
-                                  : false);
-                          final bool wantZoom =
-                              zoomDom && (zoomRateGate >= minZoomRate) && sepOk;
-                          if (wantRotate || wantZoom) {
-                            if (wantRotate && wantZoom) {
-                              decided = (rotRateDbGate >= zoomRateGate)
-                                  ? TwoFingerMode.rotate
-                                  : TwoFingerMode.zoom;
-                            } else {
-                              decided = wantRotate
-                                  ? TwoFingerMode.rotate
-                                  : TwoFingerMode.zoom;
-                            }
-                            reason = decided == TwoFingerMode.rotate
-                                ? 'lock rotate'
-                                : 'lock zoom';
-                          } else {
-                            // Rates too low; keep accumulating
-                            _lastEvidenceTime = now;
-                          }
-                        }
-                      }
-                    } else {
-                      _lastEvidenceTime =
-                          now; // reset dwell when neither dominates
-                    }
-                  } else if (kSeqAllow &&
-                      cooled &&
-                      seqCooled &&
-                      _switches < kMaxSwitches) {
-                    if (_twoMode == TwoFingerMode.zoom &&
-                        _eAngle > (1.6 * kRotHysRad) &&
-                        sep >= bmMinSepPx) {
-                      decided = TwoFingerMode.rotate;
-                      reason = 'zoom→rotate';
-                    } else if (_twoMode == TwoFingerMode.rotate &&
-                        _eScale > (1.6 * kZoomHys)) {
-                      decided = TwoFingerMode.zoom;
-                      reason = 'rotate→zoom';
-                    }
-                  }
-
-                  if (decided != _twoMode) {
-                    final dwell = now.difference(_lockTime).inMilliseconds;
-                    if (_twoMode != TwoFingerMode.undecided) _switches++;
-                    _twoMode = decided;
-                    _lockTime = now;
-                    _lastSwitchTime = now;
-                    // Reset cumulative angle for peak tracking in new mode segment
-                    _cumAngleTotal = 0.0;
-                    // Reset post-lock smoothers when we enter a new locked mode
-                    _sAngle = 0.0;
-                    _sScale = 0.0;
-                    // Initialize/clear sticky world anchors on lock
-                    if (_twoMode == TwoFingerMode.rotate) {
-                      _rigidPostLockFrames = 10; // log next 10 frames
-                      // Anchor at world under current focal at lock time
-                      _rotateAnchorWorld = screenToWorld(
-                        focal,
-                        size,
-                        _pan,
-                        _scale,
-                        _rotation,
-                      );
-                      _rotateAnchorScreen0 = worldToScreen(
-                        _rotateAnchorWorld!,
-                        size,
-                        _pan,
-                        _scale,
-                        _rotation,
-                      );
-                      _zoomAnchorWorld = null;
-                      _zoomAnchorScreen0 = null;
-                    } else if (_twoMode == TwoFingerMode.zoom) {
-                      _zoomAnchorWorld = screenToWorld(
-                        focal,
-                        size,
-                        _pan,
-                        _scale,
-                        _rotation,
-                      );
-                      _zoomAnchorScreen0 = worldToScreen(
-                        _zoomAnchorWorld!,
-                        size,
-                        _pan,
-                        _scale,
-                        _rotation,
-                      );
-                      _rotateAnchorWorld = null;
-                      _rotateAnchorScreen0 = null;
-                    } else {
-                      _rotateAnchorWorld = null;
-                      _zoomAnchorWorld = null;
-                      _rotateAnchorScreen0 = null;
-                      _zoomAnchorScreen0 = null;
-                    }
-                    if (kBM194Enable && kBM194EventLogs) {
-                      final fromTitle = _modeTitle(
-                        _twoMode == decided
-                            ? TwoFingerMode.undecided
-                            : _twoMode,
-                      );
-                      final toTitle = _modeTitle(decided);
-                      final enterStr = _lockTime.toIso8601String();
-                      final exitStr = now.toIso8601String();
-                      final dwellMs = dwell;
-                      debugPrint(
-                        '[BM-194 E] gid=$_gid $fromTitle→$toTitle enter=$enterStr exit=$exitStr dwell=${dwellMs}ms',
-                      );
-                      debugPrint(
-                        '  peakAngle=${_peakAngle.toStringAsFixed(3)}rad peakScaleΔ=${_peakScaleDelta.toStringAsFixed(3)} reason="${reason ?? ''}"',
-                      );
-                    }
-                    debugPrint(
-                      '[BM-195 E] gid=$_gid ${_twoMode == TwoFingerMode.zoom
-                          ? '→Zoom'
-                          : _twoMode == TwoFingerMode.rotate
-                          ? '→Rotate'
-                          : 'Undecided'} '
-                      'enter=${now.toIso8601String()} dwellPrev=${dwell}ms reason="${reason ?? ''}" '
-                      'peakAngle=${_peakAngle.toStringAsFixed(3)}rad peakScaleΔ=${_peakScaleDelta.toStringAsFixed(3)}',
-                    );
-                    _peakAngle = 0.0;
-                    _peakScaleDelta = 0.0;
-                  }
-
-                  // Sticky world anchors drive updates; no legacy screen focal used
-
-                  if (_twoMode == TwoFingerMode.undecided) {
-                    // Pan only while undecided
-                    if (dp2 != Offset.zero) {
-                      final dp2g = dp2 * Tunables.panGain;
-                      _pan = Tunables.keepInBounds
-                          ? _clampPan(_pan + dp2g, _scale, _rotation, size)
-                          : (_pan + dp2g);
-                      _composeView(size);
-                    }
-                  } else if (_twoMode == TwoFingerMode.zoom) {
-                    // Sticky-anchor zoom about A_screen; no pan during zoom frames
-                    final anchor =
-                        _zoomAnchorWorld ??
-                        screenToWorld(focal, size, _pan, _scale, _rotation);
-                    final aScreen = worldToScreen(
-                      anchor,
-                      size,
-                      _pan,
-                      _scale,
-                      _rotation,
-                    );
-                    // Drift diag: compare to lock-time screen anchor if available
-                    if (_zoomAnchorScreen0 != null) {
-                      diagPivotMismatchPx =
-                          (aScreen - _zoomAnchorScreen0!).distance;
-                    }
-                    // BM-196: drift before this frame's application
-                    final double bm196ZoomDriftPre = _zoomAnchorScreen0 != null
-                        ? (aScreen - _zoomAnchorScreen0!).distance
-                        : 0.0;
-                    // Compute zoom delta from pointer separation ratio (ignore Flutter rawScale)
-                    // Ensures no raw ds from the detector sneaks in; undecided remains pan-only.
-                    double dScaleFromSep = 0.0;
-                    if (_prevSep != null && _prevSep! > 0 && sep > 0) {
-                      dScaleFromSep = (sep / _prevSep!) - 1.0;
-                    }
-                    // Apply low-pass only after lock (here), never to pan
-                    _sScale = _lp(_sScale, dScaleFromSep);
-                    final factor = 1.0 + _sScale;
-                    if (factor != 1.0) {
-                      // Use BmGestureEngine to apply anchored zoom: M' = M · T(Aw)·S·T(-Aw)
-                      _bmEngine.M = Matrix4.copy(_view);
-                      _bmEngine.setLocked(true);
-                      _bmEngine.setWorldAnchor(anchor);
-                      final rmI = Matrix4.identity();
-                      final sm = Matrix4.identity()..scale(factor, factor);
-                      final tmI = Matrix4.identity();
-                      _bmEngine.buildLocalDelta(rm: rmI, sm: sm, tm: tmI);
-                      _bmEngine.applyAnchoredDelta();
-                      final mPrime = Matrix4.copy(_bmEngine.M);
-                      // Optionally clamp by decomposing
-                      if (!Tunables.keepInBounds) {
-                        _view = mPrime;
-                        _decomposeView(size);
-                        // BM-196: after apply without clamp
-                        final aAfterAll = worldToScreen(
-                          anchor,
-                          size,
-                          _pan,
-                          _scale,
-                          _rotation,
-                        );
-                        final double bm196ZoomDriftPost =
-                            _zoomAnchorScreen0 != null
-                            ? (aAfterAll - _zoomAnchorScreen0!).distance
-                            : 0.0;
-                        debugPrint(
-                          '[BM-196 L] zoomLock A_world=(${anchor.dx.toStringAsFixed(2)},${anchor.dy.toStringAsFixed(2)})',
-                        );
-                        debugPrint(
-                          '  focal=${_zoomAnchorScreen0 != null ? '(${_zoomAnchorScreen0!.dx.toStringAsFixed(0)},${_zoomAnchorScreen0!.dy.toStringAsFixed(0)})' : '(n/a)'} '
-                          'A_scr=(${aAfterAll.dx.toStringAsFixed(1)},${aAfterAll.dy.toStringAsFixed(1)}) '
-                          'driftPxPre=${bm196ZoomDriftPre.toStringAsFixed(2)} driftPxPost=${bm196ZoomDriftPost.toStringAsFixed(2)}',
-                        );
-                        debugPrint(
-                          '  dθ_raw=${dAnglePtrRaw.toStringAsFixed(3)} dθ_wrap=${dAngleInc.toStringAsFixed(3)} ds=${factor.toStringAsFixed(3)} panInject=0',
-                        );
-                        debugPrint(
-                          '  lowpass(angle)=${_sAngle.toStringAsFixed(3)} lowpass(scale)=${_sScale.toStringAsFixed(3)}',
-                        );
-                        debugPrint(
-                          '  clamp=no sep=${sep.toStringAsFixed(1)}px',
-                        );
-                      } else {
-                        // Decompose M'
-                        final savedView = _view;
-                        _view = Matrix4.copy(mPrime);
-                        _decomposeView(size);
-                        // If scale clamped, rebuild view with clamped scale around same anchor
-                        final startScale = _scaleFrom(savedView);
-                        final mPrimeScale = _scaleFrom(mPrime);
-                        final targetScale = mPrimeScale.clamp(
-                          _minScale,
-                          _maxScale,
-                        );
-                        final clampedScaleFactor = targetScale / startScale;
-                        final g2 = Matrix4.identity()
-                          ..translate(aScreen.dx, aScreen.dy)
-                          ..scale(clampedScaleFactor, clampedScaleFactor)
-                          ..translate(-aScreen.dx, -aScreen.dy);
-                        final mScaled = g2..multiply(savedView);
-                        // Now clamp pan
-                        _view = Matrix4.copy(mScaled);
-                        _decomposeView(size);
-                        final unclampedPan = _pan;
-                        final clampedPan = _clampPan(
-                          unclampedPan,
-                          _scale,
-                          _rotation,
-                          size,
-                        );
-                        // Diagnostics: clamp delta
-                        diagClampDx = clampedPan.dx - unclampedPan.dx;
-                        diagClampDy = clampedPan.dy - unclampedPan.dy;
-                        bool bm196ClampApplied = clampedPan != unclampedPan;
-                        Offset bm196CompDelta = Offset.zero;
-                        if (bm196ClampApplied) {
-                          // Rebuild matrix with clamped pan
-                          _pan = clampedPan;
-                          _composeView(size);
-                          // Compensate to keep anchor screen position
-                          final aAfterClamp = worldToScreen(
-                            anchor,
-                            size,
-                            _pan,
-                            _scale,
-                            _rotation,
-                          );
-                          final delta = aScreen - aAfterClamp;
-                          final tComp = Matrix4.identity()
-                            ..translate(delta.dx, delta.dy);
-                          bm196CompDelta = delta;
-                          _view = tComp..multiply(_view);
-                          _decomposeView(size);
-                        }
-                        // Post-check: pin error after all corrections (should be ~0)
-                        final aAfterAll = worldToScreen(
-                          anchor,
-                          size,
-                          _pan,
-                          _scale,
-                          _rotation,
-                        );
-                        diagPinErrPost = (aAfterAll - aScreen).distance;
-                        final double bm196ZoomDriftPost =
-                            _zoomAnchorScreen0 != null
-                            ? (aAfterAll - _zoomAnchorScreen0!).distance
-                            : 0.0;
-                        debugPrint(
-                          '[BM-196 L] zoomLock A_world=(${anchor.dx.toStringAsFixed(2)},${anchor.dy.toStringAsFixed(2)})',
-                        );
-                        debugPrint(
-                          '  focal=${_zoomAnchorScreen0 != null ? '(${_zoomAnchorScreen0!.dx.toStringAsFixed(0)},${_zoomAnchorScreen0!.dy.toStringAsFixed(0)})' : '(n/a)'} '
-                          'A_scr=(${aAfterAll.dx.toStringAsFixed(1)},${aAfterAll.dy.toStringAsFixed(1)}) '
-                          'driftPxPre=${bm196ZoomDriftPre.toStringAsFixed(2)} driftPxPost=${bm196ZoomDriftPost.toStringAsFixed(2)}',
-                        );
-                        debugPrint(
-                          '  dθ_raw=${dAnglePtrRaw.toStringAsFixed(3)} dθ_wrap=${dAngleInc.toStringAsFixed(3)} ds=${factor.toStringAsFixed(3)} panInject=0',
-                        );
-                        debugPrint(
-                          '  lowpass(angle)=${_sAngle.toStringAsFixed(3)} lowpass(scale)=${_sScale.toStringAsFixed(3)}',
-                        );
-                        debugPrint(
-                          '  clamp=${bm196ClampApplied ? 'yes' : 'no'} '
-                          'clampΔ=(${diagClampDx.toStringAsFixed(1)},${diagClampDy.toStringAsFixed(1)}) '
-                          'postClampCompΔ=(${bm196CompDelta.dx.toStringAsFixed(1)},${bm196CompDelta.dy.toStringAsFixed(1)}) '
-                          'sep=${sep.toStringAsFixed(1)}px',
-                        );
-                      }
-                    }
-                  } else if (_twoMode == TwoFingerMode.rotate) {
-                    // Sticky-anchor rotate about A_screen; no pan durinqg rotate frames
-                    final anchor =
-                        _rotateAnchorWorld ??
-                        screenToWorld(focal, size, _pan, _scale, _rotation);
-                    final aScreen = worldToScreen(
-                      anchor,
-                      size,
-                      _pan,
-                      _scale,
-                      _rotation,
-                    );
-                    // Drift diag: compare to lock-time screen anchor if available
-                    if (_rotateAnchorScreen0 != null) {
-                      diagPivotMismatchPx =
-                          (aScreen - _rotateAnchorScreen0!).distance;
-                    }
-                    // BM-196: drift before this frame's application
-                    final double bm196RotDriftPre = _rotateAnchorScreen0 != null
-                        ? (aScreen - _rotateAnchorScreen0!).distance
-                        : 0.0;
-                    // Pace rotation
-                    // Apply low-pass only after lock (here)
-                    _sAngle = _lp(_sAngle, dAngleInc);
-                    double dRot = _sAngle * _rotationGain;
-                    // Use monotonic frame timestamp for dt
-                    final Duration frameTs =
-                        SchedulerBinding.instance.currentSystemFrameTimeStamp;
-                    final int nowMs = frameTs.inMicroseconds > 0
-                        ? frameTs.inMilliseconds
-                        : DateTime.now().millisecondsSinceEpoch;
-                    double dt = 0.016;
-                    if (_lastRotateMs != null) {
-                      final int dms = nowMs - _lastRotateMs!;
-                      dt = (dms.clamp(0, 100)) / 1000.0; // 0..0.1s
-                      if (dt < 1 / 240.0) dt = 1 / 240.0;
-                    }
-                    final allowed = math.min(
-                      _maxRotateRate * dt,
-                      _maxRotateStep,
-                    );
-                    if (dRot > allowed) dRot = allowed;
-                    if (dRot < -allowed) dRot = -allowed;
-                    _lastRotateMs = nowMs;
-                    if (dRot != 0.0) {
-                      // Use BmGestureEngine to apply anchored rotate: M' = M · T(Aw)·R·T(-Aw)
-                      _bmEngine.M = Matrix4.copy(_view);
-                      _bmEngine.setLocked(true);
-                      _bmEngine.setWorldAnchor(anchor);
-                      final rm = Matrix4.identity()..rotateZ(dRot);
-                      final smI = Matrix4.identity();
-                      final tmI = Matrix4.identity();
-                      _bmEngine.buildLocalDelta(rm: rm, sm: smI, tm: tmI);
-                      _bmEngine.applyAnchoredDelta();
-                      final mPrime = Matrix4.copy(_bmEngine.M);
-                      if (!Tunables.keepInBounds) {
-                        _view = mPrime;
-                        _decomposeView(size);
-                        // BM-196: after apply without clamp
-                        final aAfterAll = worldToScreen(
-                          anchor,
-                          size,
-                          _pan,
-                          _scale,
-                          _rotation,
-                        );
-                        final double bm196RotDriftPost =
-                            _rotateAnchorScreen0 != null
-                            ? (aAfterAll - _rotateAnchorScreen0!).distance
-                            : 0.0;
-                        debugPrint(
-                          '[BM-196 L] rotLock A_world=(${anchor.dx.toStringAsFixed(2)},${anchor.dy.toStringAsFixed(2)})',
-                        );
-                        debugPrint(
-                          '  focal=${_rotateAnchorScreen0 != null ? '(${_rotateAnchorScreen0!.dx.toStringAsFixed(0)},${_rotateAnchorScreen0!.dy.toStringAsFixed(0)})' : '(n/a)'} '
-                          'A_scr=(${aAfterAll.dx.toStringAsFixed(1)},${aAfterAll.dy.toStringAsFixed(1)}) '
-                          'driftPxPre=${bm196RotDriftPre.toStringAsFixed(2)} driftPxPost=${bm196RotDriftPost.toStringAsFixed(2)}',
-                        );
-                        debugPrint(
-                          '  dθ_raw=${dAnglePtrRaw.toStringAsFixed(3)} dθ_wrap=${dAngleInc.toStringAsFixed(3)} ds=1.000 panInject=0',
-                        );
-                        debugPrint(
-                          '  lowpass(angle)=${_sAngle.toStringAsFixed(3)} lowpass(scale)=${_sScale.toStringAsFixed(3)}',
-                        );
-                        debugPrint(
-                          '  clamp=no sep=${sep.toStringAsFixed(1)}px',
-                        );
-                        // BM-198: per-frame drift log + rolling window PASS/FAIL
-                        final driftPx = bm196RotDriftPost;
-                        _bm198RotDrifts.add(driftPx);
-                        if (_bm198RotDrifts.length > _bm198WindowSize) {
-                          _bm198RotDrifts.removeAt(0);
-                        }
-                        debugPrint(
-                          '[BM-198 T] driftPx=${driftPx.toStringAsFixed(3)} '
-                          'A_world=(${anchor.dx.toStringAsFixed(2)},${anchor.dy.toStringAsFixed(2)}) '
-                          'A_scr=(${aAfterAll.dx.toStringAsFixed(2)},${aAfterAll.dy.toStringAsFixed(2)}) '
-                          'angle=${_rotation.toStringAsFixed(3)} scale=${_scale.toStringAsFixed(3)}',
-                        );
-                        if (_bm198RotDrifts.length >= _bm198WindowSize) {
-                          final med = _bm198Median(_bm198RotDrifts);
-                          final max = _bm198RotDrifts.reduce(math.max);
-                          final pass = (med <= 0.3) && (max < 0.7);
-                          debugPrint(
-                            '[BM-198 TEST-B] window=${_bm198RotDrifts.length} '
-                            'median=${med.toStringAsFixed(3)}px max=${max.toStringAsFixed(3)}px '
-                            '${pass ? 'PASS' : 'FAIL'}',
-                          );
-                        }
-                      } else {
-                        // Decompose new state
-                        _view = Matrix4.copy(mPrime);
-                        _decomposeView(size);
-                        final unclampedPan = _pan;
-                        final clampedPan = _clampPan(
-                          unclampedPan,
-                          _scale,
-                          _rotation,
-                          size,
-                        );
-                        // Diagnostics: clamp delta
-                        diagClampDx = clampedPan.dx - unclampedPan.dx;
-                        diagClampDy = clampedPan.dy - unclampedPan.dy;
-                        bool bm196ClampApplied = clampedPan != unclampedPan;
-                        Offset bm196CompDelta = Offset.zero;
-                        if (bm196ClampApplied) {
-                          _pan = clampedPan;
-                          _composeView(size);
-                          // Compensate to keep anchor screen position
-                          final aAfterClamp = worldToScreen(
-                            anchor,
-                            size,
-                            _pan,
-                            _scale,
-                            _rotation,
-                          );
-                          final delta = aScreen - aAfterClamp;
-                          final tComp = Matrix4.identity()
-                            ..translate(delta.dx, delta.dy);
-                          bm196CompDelta = delta;
-                          _view = tComp..multiply(_view);
-                          _decomposeView(size);
-                        }
-                        // Post-check: pin error after all corrections (should be ~0)
-                        final aAfterAll = worldToScreen(
-                          anchor,
-                          size,
-                          _pan,
-                          _scale,
-                          _rotation,
-                        );
-                        diagPinErrPost = (aAfterAll - aScreen).distance;
-                        final double bm196RotDriftPost =
-                            _rotateAnchorScreen0 != null
-                            ? (aAfterAll - _rotateAnchorScreen0!).distance
-                            : 0.0;
-                        debugPrint(
-                          '[BM-196 L] rotLock A_world=(${anchor.dx.toStringAsFixed(2)},${anchor.dy.toStringAsFixed(2)})',
-                        );
-                        debugPrint(
-                          '  focal=${_rotateAnchorScreen0 != null ? '(${_rotateAnchorScreen0!.dx.toStringAsFixed(0)},${_rotateAnchorScreen0!.dy.toStringAsFixed(0)})' : '(n/a)'} '
-                          'A_scr=(${aAfterAll.dx.toStringAsFixed(1)},${aAfterAll.dy.toStringAsFixed(1)}) '
-                          'driftPxPre=${bm196RotDriftPre.toStringAsFixed(2)} driftPxPost=${bm196RotDriftPost.toStringAsFixed(2)}',
-                        );
-                        debugPrint(
-                          '  dθ_raw=${dAnglePtrRaw.toStringAsFixed(3)} dθ_wrap=${dAngleInc.toStringAsFixed(3)} ds=1.000 panInject=0',
-                        );
-                        debugPrint(
-                          '  lowpass(angle)=${_sAngle.toStringAsFixed(3)} lowpass(scale)=${_sScale.toStringAsFixed(3)}',
-                        );
-                        debugPrint(
-                          '  clamp=${bm196ClampApplied ? 'yes' : 'no'} '
-                          'clampΔ=(${diagClampDx.toStringAsFixed(1)},${diagClampDy.toStringAsFixed(1)}) '
-                          'postClampCompΔ=(${bm196CompDelta.dx.toStringAsFixed(1)},${bm196CompDelta.dy.toStringAsFixed(1)}) '
-                          'sep=${sep.toStringAsFixed(1)}px',
-                        );
-                        // BM-198: per-frame drift log + rolling window PASS/FAIL (with clamp compensation)
-                        final driftPx = bm196RotDriftPost;
-                        _bm198RotDrifts.add(driftPx);
-                        if (_bm198RotDrifts.length > _bm198WindowSize) {
-                          _bm198RotDrifts.removeAt(0);
-                        }
-                        // BM-200B.* live driftPx line for rotate
-                        debugPrint(
-                          '[BM-200B.*] live driftPx=' +
-                              driftPx.toStringAsFixed(2),
-                        );
-                        debugPrint(
-                          '[BM-198 T] driftPx=${driftPx.toStringAsFixed(3)} '
-                          'A_world=(${anchor.dx.toStringAsFixed(2)},${anchor.dy.toStringAsFixed(2)}) '
-                          'A_scr=(${aAfterAll.dx.toStringAsFixed(2)},${aAfterAll.dy.toStringAsFixed(2)}) '
-                          'angle=${_rotation.toStringAsFixed(3)} scale=${_scale.toStringAsFixed(3)} '
-                          'clampComp=${bm196ClampApplied ? 'yes' : 'no'}',
-                        );
-                        if (_bm198RotDrifts.length >= _bm198WindowSize) {
-                          final med = _bm198Median(_bm198RotDrifts);
-                          final max = _bm198RotDrifts.reduce(math.max);
-                          final pass = (med <= 0.3) && (max < 0.7);
-                          debugPrint(
-                            '[BM-198 TEST-B] window=${_bm198RotDrifts.length} '
-                            'median=${med.toStringAsFixed(3)}px max=${max.toStringAsFixed(3)}px '
-                            '${pass ? 'PASS' : 'FAIL'}',
-                          );
-                        }
-                      }
-                    } else {
-                      // dRot == 0.0 heartbeat: still report current drift for Test B when locked
-                      final anchor = _rotateAnchorWorld;
-                      if (anchor != null) {
-                        final aAfterAll = worldToScreen(
-                          anchor,
-                          size,
-                          _pan,
-                          _scale,
-                          _rotation,
-                        );
-                        final double driftPx = _rotateAnchorScreen0 != null
-                            ? (aAfterAll - _rotateAnchorScreen0!).distance
-                            : 0.0;
-                        _bm198RotDrifts.add(driftPx);
-                        if (_bm198RotDrifts.length > _bm198WindowSize) {
-                          _bm198RotDrifts.removeAt(0);
-                        }
-                        debugPrint(
-                          '[BM-198 T] driftPx=${driftPx.toStringAsFixed(3)} '
-                          'A_world=(${anchor.dx.toStringAsFixed(2)},${anchor.dy.toStringAsFixed(2)}) '
-                          'A_scr=(${aAfterAll.dx.toStringAsFixed(2)},${aAfterAll.dy.toStringAsFixed(2)}) '
-                          'angle=${_rotation.toStringAsFixed(3)} scale=${_scale.toStringAsFixed(3)}',
-                        );
-                        if (_bm198RotDrifts.length >= _bm198WindowSize) {
-                          final med = _bm198Median(_bm198RotDrifts);
-                          final max = _bm198RotDrifts.reduce(math.max);
-                          final pass = (med <= 0.3) && (max < 0.7);
-                          debugPrint(
-                            '[BM-198 TEST-B] window=${_bm198RotDrifts.length} '
-                            'median=${med.toStringAsFixed(3)}px max=${max.toStringAsFixed(3)}px '
-                            '${pass ? 'PASS' : 'FAIL'}',
-                          );
-                        }
-                      }
-                    }
-                  }
-                  // Post-lock rigid diagnostics for a few frames to ensure smooth evolution
-                  if (_rigidPostLockFrames > 0 && rigidHave) {
-                    debugPrint(
-                      '[BM-199 RIGID] Sx=${rigidSxLog.toStringAsFixed(4)} Sy=${rigidSyLog.toStringAsFixed(4)} '
-                      'dθ=${dThetaRigid.toStringAsFixed(5)} |r1|=${r1LenLog.toStringAsFixed(3)} '
-                      '|r2|=${r2LenLog.toStringAsFixed(3)} '
-                      'residualFrac=${residualFracInst.toStringAsFixed(3)} panVeto=${(panVeto).toString()} postLock=${_rigidPostLockFrames}',
-                    );
-                    _rigidPostLockFrames--;
-                  }
-
-                  // BM-198 generic per-frame diagnostic (Undecided/Zoom):
-                  // When keepInBounds is OFF, capture a sticky world anchor on first two-finger frame,
-                  // then log drift each frame even if Rotate is not locked yet. This does not affect behavior.
-                  if (!Tunables.keepInBounds &&
-                      _twoMode != TwoFingerMode.rotate) {
-                    // Capture once
-                    if (_bm198AnchorWorld == null) {
-                      _bm198AnchorWorld = screenToWorld(
-                        focal,
-                        size,
-                        _pan,
-                        _scale,
-                        _rotation,
-                      );
-                      _bm198AnchorScreen0 = worldToScreen(
-                        _bm198AnchorWorld!,
-                        size,
-                        _pan,
-                        _scale,
-                        _rotation,
-                      );
-                    }
-                    if (_bm198AnchorWorld != null &&
-                        _bm198AnchorScreen0 != null) {
-                      final aNow = worldToScreen(
-                        _bm198AnchorWorld!,
-                        size,
-                        _pan,
-                        _scale,
-                        _rotation,
-                      );
-                      final driftPx = (aNow - _bm198AnchorScreen0!).distance;
-                      _bm198RotDrifts.add(driftPx);
-                      if (_bm198RotDrifts.length > _bm198WindowSize) {
-                        _bm198RotDrifts.removeAt(0);
-                      }
-                      debugPrint(
-                        '[BM-198 T] driftPx=${driftPx.toStringAsFixed(3)} '
-                        'A_world=(${_bm198AnchorWorld!.dx.toStringAsFixed(2)},${_bm198AnchorWorld!.dy.toStringAsFixed(2)}) '
-                        'A_scr=(${aNow.dx.toStringAsFixed(2)},${aNow.dy.toStringAsFixed(2)}) '
-                        'angle=${_rotation.toStringAsFixed(3)} scale=${_scale.toStringAsFixed(3)}',
-                      );
-                      if (_bm198RotDrifts.length >= _bm198WindowSize) {
-                        final med = _bm198Median(_bm198RotDrifts);
-                        final max = _bm198RotDrifts.reduce(math.max);
-                        final pass = (med <= 0.3) && (max < 0.7);
-                        debugPrint(
-                          '[BM-198 TEST-B] window=${_bm198RotDrifts.length} '
-                          'median=${med.toStringAsFixed(3)}px max=${max.toStringAsFixed(3)}px '
-                          '${pass ? 'PASS' : 'FAIL'}',
-                        );
-                      }
-                    }
-                  }
-
-                  // Per-frame BM-195 state log
-                  debugPrint(
-                    '[BM-195 S] gid=$_gid mode=${_twoMode.name} '
-                    'scale=${_scale.toStringAsFixed(2)} rot=${_rotation.toStringAsFixed(3)} '
-                    'pan=(${_pan.dx.toStringAsFixed(1)},${_pan.dy.toStringAsFixed(1)}) '
-                    'dScale=${dScaleInc.toStringAsFixed(4)} dAngle=${dAngleInc.toStringAsFixed(4)} '
-                    'sep=${sep.toStringAsFixed(1)} '
-                    'focal=(${focal.dx.toStringAsFixed(0)},${focal.dy.toStringAsFixed(0)})',
-                  );
-
-                  // Per-frame BM-194 state log (after state changes applied)
-                  if (kBM194Enable && kBM194StateLogs) {
-                    final nowF = DateTime.now();
-                    double fps = 0;
-                    if (_bm194LastFrameTs != null) {
-                      final dt =
-                          nowF.difference(_bm194LastFrameTs!).inMicroseconds /
-                          1e6;
-                      if (dt > 0) fps = 1 / dt;
-                    }
-                    _bm194LastFrameTs = nowF;
-                    final dPanApplied = _pan - prevPanBM194;
-                    // Indicate ignored signal based on active mode
-                    final bool ignoreAngle = _twoMode == TwoFingerMode.zoom;
-                    final bool ignoreScale = _twoMode == TwoFingerMode.rotate;
-                    debugPrint(
-                      '[BM-194 S] gid=$_gid mode=${_modeTitle(_twoMode)} '
-                      'scale=${_scale.toStringAsFixed(2)} rot=${_rotation.toStringAsFixed(3)} '
-                      'pan=(${_pan.dx.toStringAsFixed(1)},${_pan.dy.toStringAsFixed(1)})',
-                    );
-                    debugPrint(
-                      '  dScale=${_sgn(dScaleInc, frac: 3)}${ignoreScale ? ' [ignored]' : ''} (from ${prevScaleBM194.toStringAsFixed(3)}) '
-                      'dAngle=${_sgn(dAngleInc, frac: 3)} rad${ignoreAngle ? ' [ignored]' : ''} dPan=(${_sgn(dPanApplied.dx)},${_sgn(dPanApplied.dy)})',
-                    );
-                    final nowMs = nowF.millisecondsSinceEpoch;
-                    final lastMs = _bm194FpsLastTs?.millisecondsSinceEpoch ?? 0;
-                    final shouldLogFps =
-                        (nowMs - lastMs) >= Tunables.fpsLogIntervalMs;
-                    if (shouldLogFps) {
-                      _bm194FpsLastTs = nowF;
-                      debugPrint(
-                        '  sep=${sep.toStringAsFixed(0)}px focal=(${focal.dx.toStringAsFixed(0)},${focal.dy.toStringAsFixed(0)}) fps=${fps.toStringAsFixed(0)}',
-                      );
-                    } else {
-                      debugPrint(
-                        '  sep=${sep.toStringAsFixed(0)}px focal=(${focal.dx.toStringAsFixed(0)},${focal.dy.toStringAsFixed(0)})',
-                      );
-                    }
-                    // Optional pointer diagnostics: IDs and positions used for sep
-                    if (pid1 != null &&
-                        pid2 != null &&
-                        p1 != null &&
-                        p2 != null) {
-                      debugPrint(
-                        '  [BM-195 P] pIDs=[$pid1,$pid2] p1=(${p1.dx.toStringAsFixed(0)},${p1.dy.toStringAsFixed(0)}) '
-                        'p2=(${p2.dx.toStringAsFixed(0)},${p2.dy.toStringAsFixed(0)}) sep=${sep.toStringAsFixed(1)}',
-                      );
-                    }
-                  }
-
-                  // Update previous raw values
-                  _prevRawScale = rawScale;
-                  // _prevRawAngle = rawAngle;
-                  _prevFocal = focal;
-                  // no prev separation stored
-                  if (p1 != null && p2 != null) {
-                    _prevP1 = p1;
-                    _prevP2 = p2;
-                    _prevSep = sep;
-                    // store pair angle for potential future diagnostics
-                    // _prevPairAngle = math.atan2((_p2 - _p1).dy, (_p2 - _p1).dx);
-                  }
-                  _lastFocal = d.localFocalPoint;
-                  // Extra diagnostics (requested): raw signals, pin error, clamp delta, pivot mismatch
-                  debugPrint(
-                    '[BM-195 L] rawScale=${rawScale.toStringAsFixed(3)} rawRot=${rawAngle.toStringAsFixed(3)} '
-                    'sep=${sep.toStringAsFixed(1)} gate=${(sep >= bmMinSepPx)} '
-                    'pivotMismatchPx=${diagPivotMismatchPx.toStringAsFixed(1)} '
-                    'pinErrPre=${diagPinErrPre.toStringAsFixed(3)}m pinErrPost=${diagPinErrPost.toStringAsFixed(3)}m '
-                    'clampΔ=(${diagClampDx.toStringAsFixed(1)},${diagClampDy.toStringAsFixed(1)})',
-                  );
                 }
                 setState(() {
                   _didFit = true;
@@ -2686,6 +2467,10 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                     .update(pan: _pan, scale: _scale, rotation: _rotation);
               },
               onScaleEnd: (_) {
+                if (kUseSimGesture) {
+                  _isGesturing = false;
+                  return;
+                }
                 _isGesturing = false;
                 // Clear anchors on gesture end
                 // Reset rotate pacing timestamp (monotonic)
@@ -2739,16 +2524,18 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                 _bm199Gate = null;
                 _bm199PairIds = null;
                 // Reset BM-200B.8 veto state
-                _cosParAvg = 0.0;
-                _sepFracAvg = 0.0;
                 // latch resets via _tPrevMs
                 _p1PrevForPar = Offset.zero;
                 _p2PrevForPar = Offset.zero;
                 _tPrevMs = -1;
                 _currentParVeto = false;
-                _parVeto9d = false;
                 _par9e.endGesture();
                 _sampler9f.endGesture();
+                // Reset PAR centroid apply buffers
+                // reset (no-op)
+                _parCentroidPrev = null;
+                _parCentroidNow = null;
+                // deltas maintained in ParState; no local reset needed
                 // BM-199 removed per request
                 debugPrint(
                   '$_tag GESTURE end rot=${_rotation.toStringAsFixed(3)} '
@@ -2771,6 +2558,8 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                     constraints.maxHeight,
                   );
                   _lastPaintSize = size;
+                  // Keep a copy on the transform model for any helpers that consult it
+                  _xform.viewportSize = size;
                   if (!_isGesturing) {
                     WidgetsBinding.instance.addPostFrameCallback((_) {
                       _fitOnce(size, proj);
@@ -2778,13 +2567,12 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                   }
                   return CustomPaint(
                     key: ValueKey(
-                      '${_rotation.toStringAsFixed(3)}:${_scale.toStringAsFixed(2)}',
+                      '${_xform.rotRad.toStringAsFixed(3)}:${_xform.scale.toStringAsFixed(2)}:${_xform.tx.toStringAsFixed(1)}:${_xform.ty.toStringAsFixed(1)}',
                     ),
                     painter: MapPainter(
                       projection: proj,
-                      pan: _pan,
-                      scale: _scale,
-                      rotation: _rotation,
+                      xform:
+                          _xform, // SM-owned transform: single source of truth
                       borderGroups: borderGroupsVal,
                       partitionGroups: partitionGroupsVal,
                       borderPointsByGroup: borderPtsMap,
@@ -2793,7 +2581,6 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                       gps: gps.value,
                       splitRingAWorld: _previewRingA,
                       splitRingBWorld: _previewRingB,
-                      matrix: _view,
                     ),
                     child: const SizedBox.expand(),
                   );
@@ -2805,7 +2592,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
             Positioned.fill(
               child: IgnorePointer(
                 child: CustomPaint(
-                  painter: _CutPainter(_debugCutLine!, _pan, _scale, _rotation),
+                  painter: _CutPainter(_debugCutLine!, _xform),
                   child: const SizedBox.expand(),
                 ),
               ),
@@ -2832,7 +2619,7 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                       _scale,
                       _rotation,
                     );
-                    setState(() => _debugCutLine = (aWorld, bWorld));
+                    setState(() => _debugCutLine = CutLine(aWorld, bWorld));
                     await _runSplitWithWorldPoints(aWorld, bWorld, proj);
                     if (mounted) setState(() => _splitMode = false);
                   },
@@ -2846,8 +2633,11 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
                 ignoring: true,
                 child: LayoutBuilder(
                   builder: (context, constraints) {
-                    // Reuse the same view matrix as the painter for overlays
-                    final matrix = _view;
+                    // Use the single-source SM transform for overlays
+                    final matrix = Matrix4.identity()
+                      ..translate(_xform.tx, _xform.ty)
+                      ..rotateZ(_xform.rotRad)
+                      ..scale(_xform.scale);
                     return Transform(
                       transform: matrix,
                       alignment: Alignment.topLeft,
@@ -2894,52 +2684,100 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
               ignoring: _isGesturing,
               child: Column(
                 children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      FloatingActionButton.small(
+                        heroTag: 'rot_left_5',
+                        onPressed: () {
+                          final size = _lastPaintSize;
+                          final center = size.center(Offset.zero);
+                          final pivotW = screenToWorldXform(center, _xform);
+                          _xform.applyRotate(
+                            -math.pi / 36.0,
+                            pivotW: pivotW,
+                            pivotS: center,
+                          ); // -5°
+                          if (_worldBounds != null) {
+                            _xform.clampPan(
+                              worldBounds: _worldBounds!,
+                              view: size,
+                            );
+                          }
+                          debugPrint(
+                            '[BM-200R] button-rotate d=-5° => θ=${(_xform.rotRad * 180.0 / math.pi).toStringAsFixed(1)}°',
+                          );
+                          if (mounted) setState(() {});
+                        },
+                        child: const Icon(Icons.rotate_left),
+                      ),
+                      const SizedBox(width: 8),
+                      FloatingActionButton.small(
+                        heroTag: 'rot_right_5',
+                        onPressed: () {
+                          final size = _lastPaintSize;
+                          final center = size.center(Offset.zero);
+                          final pivotW = screenToWorldXform(center, _xform);
+                          _xform.applyRotate(
+                            math.pi / 36.0,
+                            pivotW: pivotW,
+                            pivotS: center,
+                          ); // +5°
+                          if (_worldBounds != null) {
+                            _xform.clampPan(
+                              worldBounds: _worldBounds!,
+                              view: size,
+                            );
+                          }
+                          debugPrint(
+                            '[BM-200R] button-rotate d=+5° => θ=${(_xform.rotRad * 180.0 / math.pi).toStringAsFixed(1)}°',
+                          );
+                          if (mounted) setState(() {});
+                        },
+                        child: const Icon(Icons.rotate_right),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
                   FloatingActionButton.small(
                     heroTag: 'zoom_in',
                     onPressed: () {
+                      // Center-stable zoom: keep current screen center mapped to same world point
                       final size = _lastPaintSize;
                       final center = size.center(Offset.zero);
-                      final m = Matrix4.identity()
-                        ..translate(center.dx, center.dy)
-                        ..scale(1.2, 1.2)
-                        ..translate(-center.dx, -center.dy);
-                      setState(() {
-                        _view = m..multiply(_view);
-                        _decomposeView(size);
-                        _didFit = true;
-                      });
-                      ref
-                          .read(mapViewController)
-                          .update(
-                            pan: _pan,
-                            scale: _scale,
-                            rotation: _rotation,
-                          );
+                      final pivotS = center;
+                      final pivotW = screenToWorldXform(pivotS, _xform);
+                      final dLog = math.log(1.2);
+                      _xform.applyZoom(dLog, pivotW: pivotW, pivotS: pivotS);
+                      if (_worldBounds != null) {
+                        _xform.clampPan(worldBounds: _worldBounds!, view: size);
+                      }
+                      if (mounted) setState(() {});
                     },
                     child: const Icon(Icons.add),
                   ),
                   const SizedBox(height: 8),
                   FloatingActionButton.small(
+                    heroTag: 'home_fit',
+                    onPressed: _homeView,
+                    tooltip: 'Fit farm',
+                    child: const Icon(Icons.home),
+                  ),
+                  const SizedBox(height: 8),
+                  FloatingActionButton.small(
                     heroTag: 'zoom_out',
                     onPressed: () {
+                      // Center-stable zoom: keep current screen center mapped to same world point
                       final size = _lastPaintSize;
                       final center = size.center(Offset.zero);
-                      final m = Matrix4.identity()
-                        ..translate(center.dx, center.dy)
-                        ..scale(1 / 1.2, 1 / 1.2)
-                        ..translate(-center.dx, -center.dy);
-                      setState(() {
-                        _view = m..multiply(_view);
-                        _decomposeView(size);
-                        _didFit = true;
-                      });
-                      ref
-                          .read(mapViewController)
-                          .update(
-                            pan: _pan,
-                            scale: _scale,
-                            rotation: _rotation,
-                          );
+                      final pivotS = center;
+                      final pivotW = screenToWorldXform(pivotS, _xform);
+                      final dLog = math.log(1 / 1.2);
+                      _xform.applyZoom(dLog, pivotW: pivotW, pivotS: pivotS);
+                      if (_worldBounds != null) {
+                        _xform.clampPan(worldBounds: _worldBounds!, view: size);
+                      }
+                      if (mounted) setState(() {});
                     },
                     child: const Icon(Icons.remove),
                   ),
@@ -2976,7 +2814,6 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
     );
   }
 
-  // ignore: unused_element
   void _startZoomAnim(Offset fp, double factor) {
     // Cancel any existing animation
     _animCtrl?.stop();
@@ -2986,26 +2823,14 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
       duration: const Duration(milliseconds: 200),
     );
     final curve = CurvedAnimation(parent: _animCtrl!, curve: Curves.easeOut);
-    final startView = Matrix4.copy(_view);
-    Size size = _lastPaintSize;
-    if (size == Size.zero) {
-      final box = context.findRenderObject() as RenderBox?;
-      size = box?.size ?? Size.zero;
-    }
+    // No legacy matrix path; animate xform directly
     void apply(double t) {
       final f = 1.0 + (factor - 1.0) * t;
-      final m = Matrix4.identity()
-        ..translate(fp.dx, fp.dy)
-        ..scale(f, f)
-        ..translate(-fp.dx, -fp.dy);
-      setState(() {
-        _view = m..multiply(startView);
-        _decomposeView(size);
-        _didFit = true;
-      });
-      ref
-          .read(mapViewController)
-          .update(pan: _pan, scale: _scale, rotation: _rotation);
+      final dLog = (f > 0) ? math.log(f) : 0.0;
+      final pivotS = fp;
+      final pivotW = screenToWorldXform(pivotS, _xform);
+      _xform.applyZoom(dLog, pivotW: pivotW, pivotS: pivotS);
+      if (mounted) setState(() {});
     }
 
     apply(0.0);
@@ -3019,58 +2844,11 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
     _animCtrl!.forward();
   }
 
-  @override
-  void dispose() {
-    _animCtrl?.dispose();
-    super.dispose();
-  }
+  // (dispose override already declared above)
 
-  // Clamp pan by keeping the viewport's world-corner box inside content bounds.
-  Offset _clampPan(Offset pan, double scale, double rot, Size size) {
-    // Map the 4 screen corners into world space using current camera.
-    final cornersScreen = <Offset>[
-      const Offset(0, 0),
-      Offset(size.width, 0),
-      Offset(0, size.height),
-      Offset(size.width, size.height),
-    ];
-    final cornersWorld = cornersScreen
-        .map((p) => screenToWorld(p, size, pan, scale, rot))
-        .toList(growable: false);
-    // Compute world extents of the viewport box
-    double minX = cornersWorld.first.dx,
-        maxX = cornersWorld.first.dx,
-        minY = cornersWorld.first.dy,
-        maxY = cornersWorld.first.dy;
-    for (final w in cornersWorld.skip(1)) {
-      if (w.dx < minX) minX = w.dx;
-      if (w.dx > maxX) maxX = w.dx;
-      if (w.dy < minY) minY = w.dy;
-      if (w.dy > maxY) maxY = w.dy;
-    }
-    // Required world-space correction to keep inside bounds
-    double dxWorld = 0, dyWorld = 0;
-    if (minX < _contentBounds.left) {
-      dxWorld += _contentBounds.left - minX;
-    }
-    if (maxX > _contentBounds.right) {
-      dxWorld += _contentBounds.right - maxX;
-    }
-    if (minY < _contentBounds.top) {
-      dyWorld += _contentBounds.top - minY;
-    }
-    if (maxY > _contentBounds.bottom) {
-      dyWorld += _contentBounds.bottom - maxY;
-    }
-    if (dxWorld == 0 && dyWorld == 0) return pan; // already inside
-    // Convert world correction to screen pan delta: Δscreen = R*S*Δworld
-    final c = math.cos(rot), s = math.sin(rot);
-    final dxScreen = dxWorld * scale * c - dyWorld * scale * s;
-    final dyScreen = dxWorld * scale * s + dyWorld * scale * c;
-    return pan + Offset(dxScreen, dyScreen);
-  }
+  // Finite matrix guard: ensure all entries finite and determinant not near zero
+  // Removed legacy _matrixFinite/_isViewFarOffscreen/_clampPan helpers (unused)
 
-  // ignore: unused_element
   Future<void> _runSplitWithWorldPoints(
     Offset aWorld,
     Offset bWorld,
@@ -3445,7 +3223,6 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
     final bgAsync = ref.read(borderGroupsProvider);
     final groups = bgAsync.asData?.value ?? const [];
     if (groups.isEmpty) return;
-
     final allPts = <Offset>[];
     for (final g in groups) {
       final pts =
@@ -3455,7 +3232,6 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
       }
     }
     if (allPts.isEmpty) return;
-
     double minX = allPts.first.dx, maxX = allPts.first.dx;
     double minY = allPts.first.dy, maxY = allPts.first.dy;
     for (final o in allPts) {
@@ -3467,62 +3243,46 @@ class _MapViewScreenState extends ConsumerState<MapViewScreen>
     final w = (maxX - minX).abs();
     final h = (maxY - minY).abs();
     if (w <= 0 || h <= 0) return;
-
-    const margin = 24.0;
-    final sx = (size.width - margin * 2) / w;
-    final sy = (size.height - margin * 2) / h;
-    final s = (sx < sy ? sx : sy).clamp(0.2, 20.0);
-
-    final centerWorld = Offset((minX + maxX) / 2, (minY + maxY) / 2);
-    // Given translate(center + pan) then scale, to bring world center to screen center with rotation 0:
-    // pan should be -centerWorld * s (center will be added by painter's translate)
-    final pan = Offset(-centerWorld.dx * s, -centerWorld.dy * s);
+    final bounds = Rect.fromLTWH(minX, minY, w, h);
+    _worldBounds = bounds;
+    _xform.homeTo(worldBounds: bounds, view: size, margin: 0.06);
+    // Removed legacy sanity rotate (was introducing large world translations when scale high).
+    final vc = size.center(Offset.zero);
+    // Diagnostics: round-trip error and world bounds coverage
+    logRoundTrip(vc, _xform);
+    logWorldAabbOnScreen(bounds, _xform);
 
     setState(() {
-      _scale = s;
-      _rotation = 0.0;
-      _pan = pan;
-      _view = Matrix4.identity()
-        ..translate(size.width / 2 + _pan.dx, size.height / 2 + _pan.dy)
-        ..rotateZ(_rotation)
-        ..scale(_scale);
       _didFit = true;
+      _pivotWAnchor = bounds.center;
     });
-    ref
-        .read(mapViewController)
-        .update(pan: _pan, scale: _scale, rotation: _rotation);
   }
 }
 
 class _CutPainter extends CustomPainter {
-  _CutPainter(this.line, this.pan, this.scale, this.rot);
-  final (Offset aWorld, Offset bWorld) line;
-  final Offset pan;
-  final double scale;
-  final double rot;
+  _CutPainter(this.line, this.xform);
+  final CutLine line;
+  final TransformModel xform;
 
   @override
   void paint(Canvas c, Size s) {
     c.save();
-    final center = s.center(Offset.zero);
-    c.translate(center.dx + pan.dx, center.dy + pan.dy);
-    c.rotate(rot);
-    c.scale(scale);
+    c.translate(xform.tx, xform.ty);
+    c.rotate(xform.rotRad);
+    c.scale(xform.scale);
     final p = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1 / scale
+      ..strokeWidth = 1 / xform.scale
       ..color = const Color(0xFFEF6C00);
-    c.drawLine(line.$1, line.$2, p);
+    c.drawLine(line.a, line.b, p);
     c.restore();
   }
 
   @override
   bool shouldRepaint(covariant _CutPainter old) =>
       old.line != line ||
-      old.pan != pan ||
-      old.scale != scale ||
-      old.rot != rot;
+      old.xform.tx != xform.tx ||
+      old.xform.ty != xform.ty ||
+      old.xform.scale != xform.scale ||
+      old.xform.rotRad != xform.rotRad;
 }
-
-// (compass badge widget moved to inline Transform for simplicity)
-// (compass badge widget moved to inline Transform for simplicity)

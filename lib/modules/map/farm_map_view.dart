@@ -511,28 +511,80 @@ class _FarmMapViewState extends State<FarmMapView> {
                 }
                 break;
               case GMode.rotZoom:
-                // While locked, ignore tm; apply anchored rot/zoom (post-multiply in local/world space)
-                if (_A_world_lock != null && _A_screen_lock != null) {
-                  final ax = _A_world_lock!.dx, ay = _A_world_lock!.dy;
-                  final Matrix4 TposLocal = Matrix4.identity()
-                    ..translate(ax, ay);
-                  final Matrix4 TnegLocal = Matrix4.identity()
-                    ..translate(-ax, -ay);
-                  final Matrix4 R = Matrix4.identity()..rotateZ(dTheta);
-                  final Matrix4 S = Matrix4.identity()..scale(dScale);
-                  final Matrix4 G_local = TposLocal * R * S * TnegLocal;
-                  setState(() {
-                    _M = _M * G_local;
-                    _postLockFrames++;
-                  });
-                  if ((_postLockFrames % 10) == 0) {
-                    final v = _M.transform3(
-                      Vector3(_A_world_lock!.dx, _A_world_lock!.dy, 0),
+                // Centroid-anchored rotate + scale then residual pan (prevents visual cutoff)
+                if (_pointers.length >= 2 && _prevPointers.length >= 2) {
+                  final keysNow = _pointers.keys.toList()..sort();
+                  final int id1 = keysNow[0];
+                  final int id2 = keysNow[1];
+                  if (_prevPointers.containsKey(id1) &&
+                      _prevPointers.containsKey(id2)) {
+                    final Offset p1Prev = _prevPointers[id1]!;
+                    final Offset p2Prev = _prevPointers[id2]!;
+                    final Offset p1Now = _pointers[id1]!;
+                    final Offset p2Now = _pointers[id2]!;
+                    final Offset cPrev = (p1Prev + p2Prev) * 0.5;
+                    final Offset cNow = (p1Now + p2Now) * 0.5;
+                    // Raw angle delta (reuse dTheta) already computed per frame
+                    // Raw log separation delta
+                    final double sepPrev = (p1Prev - p2Prev).distance;
+                    final double sepNow = (p1Now - p2Now).distance;
+                    double dLogSep = 0.0;
+                    if (sepPrev > 1e-6 && sepNow > 1e-6) {
+                      dLogSep = math.log(sepNow / sepPrev); // symmetric
+                    }
+                    final double scaleMul = math.exp(dLogSep);
+                    // Screen-space centroid to world-space (invert current matrix)
+                    final invBefore = Matrix4.inverted(_M);
+                    final awNowV = invBefore.transform3(
+                      Vector3(cNow.dx, cNow.dy, 0),
                     );
-                    final drift = (Offset(v.x, v.y) - _A_screen_lock!).distance;
+                    final Offset aWorldNow = Offset(awNowV.x, awNowV.y);
+                    // Build anchored transform: T(-centroid) * R * S * T(+centroid)
+                    final Matrix4 Tneg = Matrix4.identity()
+                      ..translate(-aWorldNow.dx, -aWorldNow.dy);
+                    final Matrix4 R = Matrix4.identity()..rotateZ(dTheta);
+                    final Matrix4 S = Matrix4.identity()..scale(scaleMul);
+                    final Matrix4 Tpos = Matrix4.identity()
+                      ..translate(aWorldNow.dx, aWorldNow.dy);
+                    Matrix4 anchored = Tpos * R * S * Tneg;
+                    // Apply residual pan AFTER anchored rotate+scale using WORLD delta of centroid
+                    // screenDeltaToWorld(dCentroid): map cNow/cPrev through inverse and take the difference
+                    final awPrevV = invBefore.transform3(
+                      Vector3(cPrev.dx, cPrev.dy, 0),
+                    );
+                    final Offset aWorldPrev = Offset(awPrevV.x, awPrevV.y);
+                    final Offset dWorld = aWorldNow - aWorldPrev;
+                    Matrix4 panResidual = Matrix4.identity()
+                      ..translate(dWorld.dx, dWorld.dy);
+                    setState(() {
+                      _M = panResidual * anchored * _M;
+                      _postLockFrames++;
+                    });
+                    // Derive raw per-frame angle/separation change for logging
+                    double rotAbs = dTheta.abs();
+                    double zoomAbs = 0.0;
+                    if (sepPrev > 1e-6 && sepNow > 1e-6) {
+                      zoomAbs = (math.log(sepNow / sepPrev)).abs();
+                    }
+                    final String applyMode = (zoomAbs > rotAbs * 1.2)
+                        ? 'zoom'
+                        : (rotAbs > zoomAbs * 1.2 ? 'rotate' : 'sticky');
+                    final double scaleAfter = _scaleFrom(_M);
+                    final double rotRadAfter = _angleFrom(_M);
+                    final double rotDegAfter = rotRadAfter * 180.0 / math.pi;
+                    final double dS = scaleMul - 1.0;
                     debugPrint(
-                      '[BM-200B.6] live driftPx=${drift.toStringAsFixed(2)}',
+                      '[APPLY] mode=$applyMode dS=${dS.toStringAsFixed(4)} dθ=${dTheta.toStringAsFixed(4)} scale=${scaleAfter.toStringAsFixed(4)} rotDeg=${rotDegAfter.toStringAsFixed(2)}',
                     );
+                    if ((_postLockFrames % 10) == 0) {
+                      final v = _M.transform3(
+                        Vector3(aWorldNow.dx, aWorldNow.dy, 0),
+                      );
+                      final drift = (Offset(v.x, v.y) - cNow).distance;
+                      debugPrint(
+                        '[BM-200B.6] live driftPx=${drift.toStringAsFixed(2)}',
+                      );
+                    }
                   }
                 }
                 // Unlock if sustained parallel
