@@ -76,6 +76,22 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
                 await Navigator.of(context).push(
                   MaterialPageRoute(builder: (_) => const IconPreviewScreen()),
                 );
+              } else if (v == 'map_real') {
+                if (!mounted) return;
+                await Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        const MapViewRoot(useBranchB: true, debugGrid: false),
+                  ),
+                );
+              } else if (v == 'map_grid') {
+                if (!mounted) return;
+                await Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        const MapViewRoot(useBranchB: true, debugGrid: true),
+                  ),
+                );
               } else {
                 // Delegate to centralized menu routing
                 menu.openTopMenu(context, v);
@@ -99,6 +115,15 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
               const PopupMenuItem(
                 value: 'icons_preview',
                 child: Text('[Dev] Icons checklist'),
+              ),
+              const PopupMenuDivider(),
+              const PopupMenuItem(
+                value: 'map_real',
+                child: Text('[Dev] Map (Real)'),
+              ),
+              const PopupMenuItem(
+                value: 'map_grid',
+                child: Text('[Dev] Map (Grid)'),
               ),
             ],
           ),

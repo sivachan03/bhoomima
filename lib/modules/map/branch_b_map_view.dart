@@ -6,10 +6,21 @@ import 'package:photo_view/photo_view.dart';
 /// Branch B: PhotoView-based Map View
 ///
 /// After BM-200PV.5:
-/// - Gestures: pan + pinch-zoom ONLY (gesture rotation disabled).
-/// - Rotation via buttons (±5°) still supported through controller.rotation.
-/// - Map content (CustomPaint + overlays) built by [mapChildBuilder].
-/// - TransformModel / SimGesture not used here; PhotoView is sole geometry engine.
+/// Gesture model (PhotoView defaults):
+///   • 1-finger drag → pure pan.
+///   • 2-finger pinch/drag → combined pan + zoom (PhotoView continuously
+///     interprets distance changes; slight “zoom noise” is normal if fingers
+///     aren’t perfectly parallel).
+///   • Gesture rotation OFF (enableRotation=false) → eliminates accidental tilt.
+///   • Rotation ONLY via buttons (±5° increments calling controller.rotation).
+/// Notes:
+///   - As scale grows >1.0 the farm exceeds the viewport; edges disappear
+///     progressively. This is normal photo-style cropping, not a geometry bug.
+///     Future tuning (if desired) could add soft clamps or dynamic margins to
+///     keep more context visible.
+///   - Background is solid black via backgroundDecoration; real map is painted
+///     above it using CustomPaint.
+///   - TransformModel / SimGesture not used; PhotoView is the sole geometry engine.
 class BranchBMapView extends StatefulWidget {
   const BranchBMapView({Key? key, required this.mapChildBuilder})
     : super(key: key);
