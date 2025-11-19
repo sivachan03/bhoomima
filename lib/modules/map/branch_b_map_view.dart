@@ -5,10 +5,11 @@ import 'package:photo_view/photo_view.dart';
 
 /// Branch B: PhotoView-based Map View
 ///
-/// - PhotoView owns pan + pinch-zoom + rotation (gesture rotation ON).
-/// - Your map content (CustomPaint + overlays) is built by [mapChildBuilder].
-/// - Buttons at bottom-right: zoom in/out, rotate left/right, home.
-/// - BM-200R TransformModel / SimGesture are NOT used in this branch.
+/// After BM-200PV.5:
+/// - Gestures: pan + pinch-zoom ONLY (gesture rotation disabled).
+/// - Rotation via buttons (±5°) still supported through controller.rotation.
+/// - Map content (CustomPaint + overlays) built by [mapChildBuilder].
+/// - TransformModel / SimGesture not used here; PhotoView is sole geometry engine.
 class BranchBMapView extends StatefulWidget {
   const BranchBMapView({Key? key, required this.mapChildBuilder})
     : super(key: key);
@@ -28,7 +29,6 @@ class _BranchBMapViewState extends State<BranchBMapView> {
   double? _initialScale;
   static const double _minScaleFactor = 0.7; // tune as you like
   static const double _maxScaleFactor = 4.0;
-  bool _ranDemo = false; // BM-200PV.2: one-shot auto demo for logs
 
   @override
   void initState() {
@@ -39,8 +39,6 @@ class _BranchBMapViewState extends State<BranchBMapView> {
     // If PhotoViewController is a ValueNotifier in your dependency version you can
     // switch back to addListener; otherwise this passive tick ensures visibility.
     WidgetsBinding.instance.addPostFrameCallback((_) => _logController());
-    // Schedule a tiny auto-demo (zoom, pan, rotate) to emit [PV] logs.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _runAutoDemo());
   }
 
   @override
@@ -112,26 +110,6 @@ class _BranchBMapViewState extends State<BranchBMapView> {
     }
   }
 
-  Future<void> _runAutoDemo() async {
-    if (_ranDemo) return;
-    _ranDemo = true;
-    // Wait a moment for initial build/size.
-    await Future.delayed(const Duration(milliseconds: 400));
-    // Zoom in a few times.
-    _zoomByFactor(1.12);
-    await Future.delayed(const Duration(milliseconds: 150));
-    _zoomByFactor(1.12);
-    await Future.delayed(const Duration(milliseconds: 150));
-    _zoomByFactor(1.12);
-    // Pan a bit by nudging position.
-    await Future.delayed(const Duration(milliseconds: 200));
-    final pos = _controller.value.position;
-    _controller.position = pos + const Offset(60, -40);
-    // Small rotate.
-    await Future.delayed(const Duration(milliseconds: 200));
-    _rotateByDegrees(5);
-  }
-
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
@@ -155,7 +133,8 @@ class _BranchBMapViewState extends State<BranchBMapView> {
               child: PhotoView.customChild(
                 controller: _controller,
                 scaleStateController: _scaleStateController,
-                enableRotation: true, // R1: rotation about gesture center
+                enableRotation:
+                    false, // gesture rotation OFF; buttons still rotate
                 backgroundDecoration: const BoxDecoration(color: Colors.black),
                 minScale: minScale,
                 maxScale: maxScale,
