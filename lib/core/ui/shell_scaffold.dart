@@ -79,20 +79,14 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
                 );
               } else if (v == 'map_real') {
                 if (!mounted) return;
-                await Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) =>
-                        const MapViewRoot(useBranchB: true, debugGrid: false),
-                  ),
-                );
+                await Navigator.of(
+                  context,
+                ).push(MaterialPageRoute(builder: (_) => const MapViewRoot()));
               } else if (v == 'map_grid') {
                 if (!mounted) return;
-                await Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) =>
-                        const MapViewRoot(useBranchB: true, debugGrid: true),
-                  ),
-                );
+                await Navigator.of(
+                  context,
+                ).push(MaterialPageRoute(builder: (_) => const MapViewRoot()));
               } else if (v == 'map_java_style') {
                 if (!mounted) return;
                 await Navigator.of(context).push(
@@ -204,7 +198,7 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
       body: TabBarView(
         controller: _tabs,
         children: [
-          const MapViewRoot(useBranchB: true),
+          const MapViewRoot(),
           Consumer(
             builder: (_, ref, __) {
               final active = ref.watch(activePropertyProvider).asData?.value;

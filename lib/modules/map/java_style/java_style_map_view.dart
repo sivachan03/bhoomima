@@ -24,7 +24,12 @@ class JavaStyleMapView extends ConsumerStatefulWidget {
 }
 
 class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
-  final _engine = TwoFingerGestureEngine();
+  // Tuned deadzones: higher minScaleChange reduces unintended zoom on light pan.
+  final _engine = TwoFingerGestureEngine(
+    minScaleChange:
+        0.010, // was 0.002 (0.2%), now 1.0% per frame before zoom engages
+    rotationDeadZone: 0.005, // was 0.003 (~0.17°), now ~0.29°
+  );
   final Map<int, Offset> _pointers = {};
   late TransformModel _xform; // runtime mutable transform
   Rect _worldBounds = const Rect.fromLTWH(-500, -500, 1000, 1000);
@@ -42,8 +47,8 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
     _xform.homeTo(
       worldBounds: _worldBounds,
       view: _viewSize,
-      margin: 0.08,
-    ); // slightly larger margin
+      margin: 0.12,
+    ); // increased margin to reduce initial edge cropping
     setState(() {});
   }
 
@@ -55,6 +60,7 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
   }
 
   void _onPointerDown(PointerDownEvent e) {
+    debugPrint('[J2] down id=${e.pointer} pos=${e.localPosition}');
     _engine.onPointerDown(e.pointer, e.localPosition, _pointers);
   }
 
@@ -62,6 +68,7 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
     _pointers[e.pointer] = e.localPosition;
     if (_pointers.length == 2 && _engine.isActive) {
       final update = _engine.onPointerMove(_pointers);
+      debugPrint('[J2] move id=${e.pointer} update=$update');
       _applyTwoFinger(update);
     } else {
       // 0/1/>2 fingers: ignore for geometry; reserve for other interactions.
