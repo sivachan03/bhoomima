@@ -60,26 +60,33 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
   }
 
   void _onPointerDown(PointerDownEvent e) {
+    _pointers[e.pointer] = e.localPosition;
     debugPrint('[J2] down id=${e.pointer} pos=${e.localPosition}');
     _engine.onPointerDown(e.pointer, e.localPosition, _pointers);
   }
 
   void _onPointerMove(PointerMoveEvent e) {
     _pointers[e.pointer] = e.localPosition;
-    if (_pointers.length == 2 && _engine.isActive) {
+
+    if (_engine.isActive) {
       final update = _engine.onPointerMove(_pointers);
       debugPrint('[J2] move id=${e.pointer} update=$update');
       _applyTwoFinger(update);
     } else {
-      // 0/1/>2 fingers: ignore for geometry; reserve for other interactions.
+      debugPrint(
+        '[J2] move id=${e.pointer} ignored '
+        '(active=${_engine.isActive}, count=${_pointers.length})',
+      );
     }
   }
 
   void _onPointerUp(PointerUpEvent e) {
+    debugPrint('[J2] up id=${e.pointer}');
     _engine.onPointerUpOrCancel(e.pointer, _pointers);
   }
 
   void _onPointerCancel(PointerCancelEvent e) {
+    debugPrint('[J2] cancel id=${e.pointer}');
     _engine.onPointerUpOrCancel(e.pointer, _pointers);
   }
 
@@ -148,8 +155,11 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
         }
         _worldBounds = wb;
 
-        // One-time home fit at first build.
-        if (!_didHomeFit) {
+        // Determine if we actually have real map data yet.
+        final hasData = borderPtsMap.isNotEmpty || partitionPtsMap.isNotEmpty;
+        // One-time home fit ONLY after data arrives (avoid homing to dummy bounds).
+        if (!_didHomeFit && hasData) {
+          debugPrint('[J2] home → data ready; performing initial fit');
           _recomputeHome();
           _didHomeFit = true;
         }
