@@ -4,6 +4,7 @@ import '../../l10n/app_localizations.dart';
 // current_property and properties_screen now handled via Line2PropertyChip and picker
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../modules/map/map_view_root.dart';
+import '../../modules/map/java_style/java_style_map_view.dart';
 import '../services/gps_service.dart';
 import '../../modules/shell/line2_property_chip.dart';
 import '../../modules/shared/bottom_plus_menu.dart';
@@ -92,6 +93,11 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
                         const MapViewRoot(useBranchB: true, debugGrid: true),
                   ),
                 );
+              } else if (v == 'map_java_style') {
+                if (!mounted) return;
+                await Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const JavaStyleMapView()),
+                );
               } else {
                 // Delegate to centralized menu routing
                 menu.openTopMenu(context, v);
@@ -124,6 +130,10 @@ class _ShellScaffoldState extends ConsumerState<ShellScaffold>
               const PopupMenuItem(
                 value: 'map_grid',
                 child: Text('[Dev] Map (Grid)'),
+              ),
+              const PopupMenuItem(
+                value: 'map_java_style',
+                child: Text('[Dev] Map (Java 2-finger)'),
               ),
             ],
           ),

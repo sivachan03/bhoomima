@@ -146,7 +146,7 @@ class _BranchBMapViewState extends State<BranchBMapView> {
                 scaleStateController: _scaleStateController,
                 enableRotation:
                     false, // gesture rotation OFF; buttons still rotate
-                backgroundDecoration: const BoxDecoration(color: Colors.black),
+                backgroundDecoration: const BoxDecoration(color: Colors.white),
                 minScale: minScale,
                 maxScale: maxScale,
                 childSize: viewSize,
