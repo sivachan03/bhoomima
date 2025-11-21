@@ -73,7 +73,8 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
   void _applyTwoFinger(TwoFingerUpdate u) {
     if (u == TwoFingerUpdate.zero) return;
     applyTwoFingerUpdateToTransform(_xform, u);
-    _xform.clampPan(worldBounds: _worldBounds, view: _viewSize);
+    // TEMP BM-300.6: disable clamping while debugging gesture math.
+    // _xform.clampPan(worldBounds: _worldBounds, view: _viewSize);
     setState(() {});
   }
 
@@ -100,7 +101,8 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
         final dy = e.delta.dy;
         _xform.tx += dx;
         _xform.ty += dy;
-        _xform.clampPan(worldBounds: _worldBounds, view: _viewSize);
+        // TEMP BM-300.6: disable clamping to observe raw translation.
+        // _xform.clampPan(worldBounds: _worldBounds, view: _viewSize);
         debugPrint(
           '[J2] one-finger pan dx=${dx.toStringAsFixed(2)} '
           'dy=${dy.toStringAsFixed(2)} → '
