@@ -21,6 +21,7 @@ class MapPainter extends CustomPainter {
     this.showPointLabels = false,
     this.splitRingAWorld,
     this.splitRingBWorld,
+    this.showDebugAxis = false,
   });
   final ProjectionService projection;
   final List<PointGroup> borderGroups;
@@ -34,6 +35,7 @@ class MapPainter extends CustomPainter {
   final List<Offset>? splitRingAWorld;
   final List<Offset>? splitRingBWorld;
   final TransformModel xform; // transform model with tx,ty,scale,rotRad
+  final bool showDebugAxis; // controls drawing of axis cross
 
   // Debug helpers (one-time logging during a session)
   static bool _loggedCountsOnce = false;
@@ -52,13 +54,22 @@ class MapPainter extends CustomPainter {
     final double effectiveScale = m.scale;
     final double effectiveRotation = m.rotRad;
 
-    // DEBUG: show rotation axis so we can see rotation working
-    final axis = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5 / effectiveScale
-      ..color = const Color(0xFFE91E63);
-    canvas.drawLine(const Offset(-40, 0), const Offset(40, 0), axis);
-    canvas.drawLine(const Offset(0, -40), const Offset(0, 40), axis);
+    debugPrint(
+      '[MP] paint borderGroups=${borderGroups.length} '
+      'partitionGroups=${partitionGroups.length} '
+      'borderPtsMaps=${borderPointsByGroup.length} '
+      'partitionPtsMaps=${partitionPointsByGroup.length}',
+    );
+
+    // DEBUG optional: show rotation axis so we can see rotation working
+    if (showDebugAxis) {
+      final axis = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5 / effectiveScale
+        ..color = const Color(0xFFE91E63);
+      canvas.drawLine(const Offset(-40, 0), const Offset(40, 0), axis);
+      canvas.drawLine(const Offset(0, -40), const Offset(0, 40), axis);
+    }
 
     // BM-190: authoritative paint log from xform only
     debugPrint(
@@ -132,7 +143,13 @@ class MapPainter extends CustomPainter {
         continue;
       }
       final pts = partitionPointsByGroup[g.id] ?? const <Point>[];
-      if (pts.length < 3) continue;
+      if (pts.length < 3) {
+        // Debug: insufficient points to form partition polygon.
+        debugPrint(
+          'MapPainter: partition group id=${g.id} insufficient pts=${pts.length} (<3)',
+        );
+        continue;
+      }
 
       // Print first few points of the first non-empty partition group (one-time)
       if (!_printedSamplePtsOnce && pts.isNotEmpty) {
@@ -173,7 +190,12 @@ class MapPainter extends CustomPainter {
         continue;
       }
       final pts = borderPointsByGroup[g.id] ?? const <Point>[];
-      if (pts.length < 2) continue;
+      if (pts.length < 2) {
+        debugPrint(
+          'MapPainter: border group id=${g.id} insufficient pts=${pts.length} (<2)',
+        );
+        continue;
+      }
       final first = projection.project(pts.first.lat, pts.first.lon);
       final path = Path()..moveTo(first.dx, first.dy);
       for (var i = 1; i < pts.length; i++) {
