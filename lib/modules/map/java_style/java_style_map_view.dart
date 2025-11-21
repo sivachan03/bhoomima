@@ -24,6 +24,17 @@ class JavaStyleMapView extends ConsumerStatefulWidget {
 }
 
 class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
+  /// Gesture semantics & logging expectations (BM-300.4):
+  /// - Engine only activates when TWO pointers are down simultaneously.
+  /// - Logs show `count=1` for single-finger interactions; these are ignored for geometry.
+  /// - For a valid 2-finger gesture we expect sequence:
+  ///     [J2] down id=.. count=1
+  ///     [J2] down id=.. count=2   <-- second finger
+  ///     [J2] move id=.. update=TwoFingerUpdate(...)
+  ///     [J2] apply pan=(..) scaleFactor=.. dθ=.. → T=(..)..
+  /// - If `count` never reaches 2, TransformModel won't change via gestures.
+  /// - Use a real multi-touch source (device/emulator multi-touch) to generate 2-pointer events.
+  /// - HUD (top-left) shows live S/T/R so non-changing values confirm no engine activation.
   // Tuned deadzones: higher minScaleChange reduces unintended zoom on light pan.
   final _engine = TwoFingerGestureEngine(
     minScaleChange:
@@ -35,6 +46,13 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
   Rect _worldBounds = const Rect.fromLTWH(-500, -500, 1000, 1000);
   Size _viewSize = Size.zero;
   bool _didHomeFit = false;
+
+  /// Startup visual note:
+  /// The initial "red cross" the user sees is likely a placeholder/error visual
+  /// from MapPainter when there is no map data yet (groups empty). Once providers
+  /// deliver data, we log the home fit and repaint with real geometry. This is
+  /// distinct from gesture activation; a red cross followed by a successful
+  /// `[J2] home → data ready;` means data arrived and transform was applied.
 
   @override
   void initState() {
@@ -71,14 +89,31 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
   void _onPointerMove(PointerMoveEvent e) {
     _pointers[e.pointer] = e.localPosition;
     if (_engine.isActive) {
+      // True 2-finger gesture in progress: pan + zoom + rotate.
       final update = _engine.onPointerMove(_pointers);
       debugPrint('[J2] move id=${e.pointer} update=$update');
       _applyTwoFinger(update);
     } else {
-      debugPrint(
-        '[J2] move id=${e.pointer} ignored '
-        '(active=${_engine.isActive}, count=${_pointers.length})',
-      );
+      if (_pointers.length == 1) {
+        // TEMP BM-300.5: allow simple 1-finger pan so map is not dead.
+        final dx = e.delta.dx;
+        final dy = e.delta.dy;
+        _xform.tx += dx;
+        _xform.ty += dy;
+        _xform.clampPan(worldBounds: _worldBounds, view: _viewSize);
+        debugPrint(
+          '[J2] one-finger pan dx=${dx.toStringAsFixed(2)} '
+          'dy=${dy.toStringAsFixed(2)} → '
+          'T=(${_xform.tx.toStringAsFixed(1)},${_xform.ty.toStringAsFixed(1)})',
+        );
+        setState(() {});
+      } else {
+        // 0 or >2 pointers but engine not active: ignore for geometry.
+        debugPrint(
+          '[J2] move id=${e.pointer} ignored '
+          '(active=${_engine.isActive}, count=${_pointers.length})',
+        );
+      }
     }
   }
 
@@ -188,7 +223,10 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
         final hasData = borderPtsMap.isNotEmpty || partitionPtsMap.isNotEmpty;
         // One-time home fit ONLY after data arrives (avoid homing to dummy bounds).
         if (!_didHomeFit && hasData) {
-          debugPrint('[J2] home → data ready; performing initial fit');
+          debugPrint(
+            '[J2] home → data ready; performing initial fit '
+            '(borderGroups=${borderGroupsVal.length}, partitionGroups=${partitionGroupsVal.length})',
+          );
           _recomputeHome();
           _didHomeFit = true;
         }
