@@ -61,13 +61,15 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
 
   void _onPointerDown(PointerDownEvent e) {
     _pointers[e.pointer] = e.localPosition;
-    debugPrint('[J2] down id=${e.pointer} pos=${e.localPosition}');
+    debugPrint(
+      '[J2] down id=${e.pointer} pos=${e.localPosition} '
+      'count=${_pointers.length}',
+    );
     _engine.onPointerDown(e.pointer, e.localPosition, _pointers);
   }
 
   void _onPointerMove(PointerMoveEvent e) {
     _pointers[e.pointer] = e.localPosition;
-
     if (_engine.isActive) {
       final update = _engine.onPointerMove(_pointers);
       debugPrint('[J2] move id=${e.pointer} update=$update');
@@ -81,13 +83,40 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
   }
 
   void _onPointerUp(PointerUpEvent e) {
-    debugPrint('[J2] up id=${e.pointer}');
+    debugPrint(
+      '[J2] up id=${e.pointer} before-remove count=${_pointers.length}',
+    );
     _engine.onPointerUpOrCancel(e.pointer, _pointers);
+    debugPrint(
+      '[J2] up id=${e.pointer} after-remove count=${_pointers.length}',
+    );
   }
 
   void _onPointerCancel(PointerCancelEvent e) {
-    debugPrint('[J2] cancel id=${e.pointer}');
+    debugPrint(
+      '[J2] cancel id=${e.pointer} before-remove count=${_pointers.length}',
+    );
     _engine.onPointerUpOrCancel(e.pointer, _pointers);
+    debugPrint(
+      '[J2] cancel id=${e.pointer} after-remove count=${_pointers.length}',
+    );
+  }
+
+  Widget _buildDebugHud() {
+    return Positioned(
+      left: 8,
+      top: 8,
+      child: Container(
+        padding: const EdgeInsets.all(6),
+        color: Colors.black.withOpacity(0.5),
+        child: Text(
+          'S=${_xform.scale.toStringAsFixed(2)} '
+          'T=(${_xform.tx.toStringAsFixed(0)},${_xform.ty.toStringAsFixed(0)}) '
+          'R=${(_xform.rotRad * 180 / math.pi).toStringAsFixed(1)}°',
+          style: const TextStyle(color: Colors.white, fontSize: 11),
+        ),
+      ),
+    );
   }
 
   @override
@@ -192,6 +221,7 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
                 child: const SizedBox.expand(),
               ),
             ),
+            _buildDebugHud(),
             Positioned(
               right: 12,
               bottom: 12,
