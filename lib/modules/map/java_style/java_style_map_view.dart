@@ -61,12 +61,30 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
   }
 
   void _recomputeHome() {
+    // BM-300.10: Manual home fit (replace TransformModel.homeTo) so math is explicit.
     if (_viewSize.isEmpty) return;
-    _xform.homeTo(
-      worldBounds: _worldBounds,
-      view: _viewSize,
-      margin: 0.12,
-    ); // increased margin to reduce initial edge cropping
+    if (_worldBounds.width <= 0 || _worldBounds.height <= 0) return;
+
+    const double marginFrac = 0.08; // slightly tighter than previous 0.12
+    final double vw = _viewSize.width;
+    final double vh = _viewSize.height;
+    final double availW = vw * (1.0 - 2 * marginFrac);
+    final double availH = vh * (1.0 - 2 * marginFrac);
+    if (availW <= 0 || availH <= 0) return;
+
+    final double sx = availW / _worldBounds.width;
+    final double sy = availH / _worldBounds.height;
+    final double scale = math.min(sx, sy);
+
+    final Offset worldCenter = _worldBounds.center;
+    _xform.scale = scale;
+    _xform.rotRad = 0.0;
+    _xform.tx = vw / 2.0 - worldCenter.dx * scale;
+    _xform.ty = vh / 2.0 - worldCenter.dy * scale;
+
+    debugPrint(
+      '[J2] homeFit manual scale=${scale.toStringAsFixed(4)} centerW=(${worldCenter.dx.toStringAsFixed(1)},${worldCenter.dy.toStringAsFixed(1)}) T=(${_xform.tx.toStringAsFixed(1)},${_xform.ty.toStringAsFixed(1)})',
+    );
     setState(() {});
   }
 
@@ -84,6 +102,11 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
       '[J2] down id=${e.pointer} pos=${e.localPosition} '
       'count=${_pointers.length}',
     );
+    if (_pointers.length == 2) {
+      debugPrint(
+        '[J2] second finger detected; engine should activate on next move',
+      );
+    }
     _engine.onPointerDown(e.pointer, e.localPosition, _pointers);
   }
 
@@ -149,7 +172,8 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
         child: Text(
           'S=${_xform.scale.toStringAsFixed(2)} '
           'T=(${_xform.tx.toStringAsFixed(0)},${_xform.ty.toStringAsFixed(0)}) '
-          'R=${(_xform.rotRad * 180 / math.pi).toStringAsFixed(1)}°',
+          'R=${(_xform.rotRad * 180 / math.pi).toStringAsFixed(1)}° '
+          'P=${_pointers.length} active=${_engine.isActive}',
           style: const TextStyle(color: Colors.white, fontSize: 11),
         ),
       ),
@@ -220,6 +244,9 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
           includeGroupBounds(partitionPtsMap);
         }
         _worldBounds = wb;
+        debugPrint(
+          '[J2] worldBounds w=${_worldBounds.width.toStringAsFixed(1)} h=${_worldBounds.height.toStringAsFixed(1)} at (${_worldBounds.left.toStringAsFixed(1)},${_worldBounds.top.toStringAsFixed(1)}) view=(${_viewSize.width.toStringAsFixed(1)}x${_viewSize.height.toStringAsFixed(1)})',
+        );
 
         // Determine if we actually have real map data yet.
         final hasData = borderPtsMap.isNotEmpty || partitionPtsMap.isNotEmpty;
