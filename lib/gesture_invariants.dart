@@ -49,10 +49,7 @@ CheckResult checkInvariants(
   final issues = <Violation>[];
   if (verbose) {
     // ignore: avoid_print
-    print(
-      '[invariants] kCheckZoomReadyStalled=' +
-          kCheckZoomReadyStalled.toString(),
-    );
+    print('[invariants] kCheckZoomReadyStalled=$kCheckZoomReadyStalled');
   }
 
   int winSize() => (cfg.windowMs / 16.7).round().clamp(8, 60);

@@ -43,7 +43,7 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
   );
   final Map<int, Offset> _pointers = {};
   late TransformModel _xform; // runtime mutable transform
-  Rect _worldBounds = const Rect.fromLTWH(-500, -500, 1000, 1000);
+  Rect _worldBounds = Rect.zero; // starts with no bounds until data projects
   Size _viewSize = Size.zero;
   bool _didHomeFit = false;
 
@@ -102,6 +102,9 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
       '[J2] down id=${e.pointer} pos=${e.localPosition} '
       'count=${_pointers.length}',
     );
+    debugPrint(
+      '[J2] down kind=${e.kind} device=${e.device} pointer=${e.pointer}',
+    );
     if (_pointers.length == 2) {
       debugPrint(
         '[J2] second finger detected; engine should activate on next move',
@@ -138,6 +141,18 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
           '[J2] move id=${e.pointer} ignored '
           '(active=${_engine.isActive}, count=${_pointers.length})',
         );
+        if (_pointers.length == 2) {
+          // Two pointers present but engine inactive: likely emulator not producing distinct multi-touch stream.
+          final entries = _pointers.entries
+              .map(
+                (e2) =>
+                    '#${e2.key}@(${e2.value.dx.toStringAsFixed(1)},${e2.value.dy.toStringAsFixed(1)})',
+              )
+              .join(', ');
+          debugPrint(
+            '[J2] WARN two pointers tracked but engine inactive; positions: $entries',
+          );
+        }
       }
     }
   }
@@ -209,7 +224,8 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
         }
 
         // Compute world bounds (used for home fit and clamping).
-        Rect wb = const Rect.fromLTWH(-500, -500, 1000, 1000);
+        Rect wb =
+            Rect.zero; // accumulate real projected bounds when data arrives
         void includeGroupBounds(Map<int, List<Point>> ptsByGroup) {
           bool hasAny = false;
           Offset minNow = Offset.zero;
@@ -248,13 +264,15 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
           '[J2] worldBounds w=${_worldBounds.width.toStringAsFixed(1)} h=${_worldBounds.height.toStringAsFixed(1)} at (${_worldBounds.left.toStringAsFixed(1)},${_worldBounds.top.toStringAsFixed(1)}) view=(${_viewSize.width.toStringAsFixed(1)}x${_viewSize.height.toStringAsFixed(1)})',
         );
 
-        // Determine if we actually have real map data yet.
-        final hasData = borderPtsMap.isNotEmpty || partitionPtsMap.isNotEmpty;
-        // One-time home fit ONLY after data arrives (avoid homing to dummy bounds).
-        if (!_didHomeFit && hasData) {
+        // Home gating now purely bounds-based (BM-300.11): run once when bounds become valid.
+        final hasBounds =
+            _worldBounds.width > 0 &&
+            _worldBounds.height > 0 &&
+            _worldBounds.left.isFinite &&
+            _worldBounds.top.isFinite;
+        if (!_didHomeFit && hasBounds) {
           debugPrint(
-            '[J2] home → data ready; performing initial fit '
-            '(borderGroups=${borderGroupsVal.length}, partitionGroups=${partitionGroupsVal.length})',
+            '[J2] home → bounds ready; performing initial fit (w=${_worldBounds.width.toStringAsFixed(1)} h=${_worldBounds.height.toStringAsFixed(1)})',
           );
           _recomputeHome();
           _didHomeFit = true;
