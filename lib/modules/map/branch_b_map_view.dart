@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:photo_view/photo_view.dart';
+import 'finger_debug_surface.dart';
 // Controllers are exported by photo_view.dart
 
 /// Branch B: PhotoView-based Map View
@@ -122,6 +123,8 @@ class _BranchBMapViewState extends State<BranchBMapView> {
 
   @override
   Widget build(BuildContext context) {
+    const bool enableFingerDebug =
+        true; // flip to false to disable raw pointer logs
     return LayoutBuilder(
       builder: (_, constraints) {
         final Size viewSize = Size(constraints.maxWidth, constraints.maxHeight);
@@ -137,7 +140,7 @@ class _BranchBMapViewState extends State<BranchBMapView> {
           'minScale=${minScale.toStringAsFixed(3)} maxScale=${maxScale.toStringAsFixed(3)}',
         );
 
-        return Stack(
+        Widget content = Stack(
           children: [
             ClipRect(
               child: PhotoView.customChild(
@@ -196,6 +199,10 @@ class _BranchBMapViewState extends State<BranchBMapView> {
             ),
           ],
         );
+        if (enableFingerDebug) {
+          content = FingerDebugSurface(child: content);
+        }
+        return content;
       },
     );
   }

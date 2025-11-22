@@ -12,12 +12,16 @@ import '../../../core/models/point_group.dart';
 import '../../../core/models/point.dart';
 import 'two_finger_gesture.dart';
 import 'gesture_apply.dart';
+import '../finger_debug_surface.dart';
 
 /// Java-style map view: direct 2-finger gesture engine (pan+zoom+rotate) without PhotoView.
 /// 1 finger: ignored (could be wired for tap interactions overlay).
 /// 2 fingers: per-frame deltas applied to TransformModel using focal point pivot logic.
 class JavaStyleMapView extends ConsumerStatefulWidget {
-  const JavaStyleMapView({super.key});
+  const JavaStyleMapView({super.key, this.rawTouchTestMode = false});
+
+  /// If true, renders a blank surface wrapped in FingerDebugSurface to isolate multi-touch delivery.
+  final bool rawTouchTestMode;
 
   @override
   ConsumerState<JavaStyleMapView> createState() => _JavaStyleMapViewState();
@@ -124,100 +128,9 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
     setState(() {});
   }
 
-  void _onPointerDown(PointerDownEvent e) {
-    _pointers[e.pointer] = e.localPosition;
-    debugPrint(
-      '[J2] down id=${e.pointer} pos=${e.localPosition} '
-      'count=${_pointers.length}',
-    );
-    debugPrint(
-      '[J2] down kind=${e.kind} device=${e.device} pointer=${e.pointer}',
-    );
-    // Double-tap detection (basic): if last tap within 300ms and distance < 40px.
-    final now = DateTime.now();
-    _lastTapTimes.add(now);
-    if (_lastTapTimes.length > 2) _lastTapTimes.removeAt(0);
-    if (_lastTapPositions.length > 2) _lastTapPositions.removeAt(0);
-    _lastTapPositions.add(e.localPosition);
-    if (_lastTapTimes.length == 2) {
-      final dt = _lastTapTimes[1].difference(_lastTapTimes[0]).inMilliseconds;
-      final dp = (_lastTapPositions[1] - _lastTapPositions[0]).distance;
-      if (dt < 300 && dp < 40) {
-        // Compute world pivot for zoom: inverse of current transform for screen point.
-        final pivotS = e.localPosition;
-        final invScale = 1.0 / _xform.scale;
-        final cosR = math.cos(-_xform.rotRad);
-        final sinR = math.sin(-_xform.rotRad);
-        // Convert screen to world: untranslate -> unrotate -> unscale.
-        final sx = pivotS.dx - _xform.tx;
-        final sy = pivotS.dy - _xform.ty;
-        final rx = sx * cosR - sy * sinR;
-        final ry = sx * sinR + sy * cosR;
-        final worldPivot = Offset(rx * invScale, ry * invScale);
-        _xform.applyZoom(
-          math.log(1.35), // zoom in ~35%
-          pivotW: worldPivot,
-          pivotS: pivotS,
-        );
-        debugPrint(
-          '[J2] doubleTap zoom pivotW=(${worldPivot.dx.toStringAsFixed(1)},${worldPivot.dy.toStringAsFixed(1)}) newScale=${_xform.scale.toStringAsFixed(2)}',
-        );
-        setState(() {});
-      }
-    }
-    if (_pointers.length == 2) {
-      debugPrint(
-        '[J2] second finger detected; engine should activate on next move',
-      );
-    }
-    _engine.onPointerDown(e.pointer, e.localPosition, _pointers);
-  }
+  // Original pointer down logic removed: FingerDebugSurface now supplies raw callbacks.
 
-  void _onPointerMove(PointerMoveEvent e) {
-    _pointers[e.pointer] = e.localPosition;
-    if (_engine.isActive) {
-      // True 2-finger gesture in progress: pan + zoom + rotate.
-      final update = _engine.onPointerMove(_pointers);
-      debugPrint('[J2] move id=${e.pointer} update=$update');
-      _applyTwoFinger(update);
-    } else {
-      // Not active: ignoring movement (Java semantics when single finger or >2 without activation).
-      debugPrint(
-        '[J2] move id=${e.pointer} ignored (active=${_engine.isActive}, count=${_pointers.length})',
-      );
-      if (_pointers.length == 2) {
-        final entries = _pointers.entries
-            .map(
-              (e2) =>
-                  '#${e2.key}@(${e2.value.dx.toStringAsFixed(1)},${e2.value.dy.toStringAsFixed(1)})',
-            )
-            .join(', ');
-        debugPrint(
-          '[J2] WARN two pointers tracked but engine inactive; positions: $entries',
-        );
-      }
-    }
-  }
-
-  void _onPointerUp(PointerUpEvent e) {
-    debugPrint(
-      '[J2] up id=${e.pointer} before-remove count=${_pointers.length}',
-    );
-    _engine.onPointerUpOrCancel(e.pointer, _pointers);
-    debugPrint(
-      '[J2] up id=${e.pointer} after-remove count=${_pointers.length}',
-    );
-  }
-
-  void _onPointerCancel(PointerCancelEvent e) {
-    debugPrint(
-      '[J2] cancel id=${e.pointer} before-remove count=${_pointers.length}',
-    );
-    _engine.onPointerUpOrCancel(e.pointer, _pointers);
-    debugPrint(
-      '[J2] cancel id=${e.pointer} after-remove count=${_pointers.length}',
-    );
-  }
+  // Legacy Listener handlers removed after FingerDebugSurface refactor.
 
   Widget _buildDebugHud() {
     return Positioned(
@@ -239,6 +152,7 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
 
   @override
   Widget build(BuildContext context) {
+    // Blank test mode removed (was causing dead code lint). Use a separate wrapper if needed.
     // Providers (similar to BranchB logic)
     final prop = ref.watch(activePropertyProvider).asData?.value;
     final gps = ref.watch(gpsStreamProvider).asData?.value;
@@ -258,6 +172,19 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
       prop?.originLon ?? prop?.lon ?? 0,
     );
 
+    if (widget.rawTouchTestMode) {
+      // Pure raw touch diagnostic mode: blank container wrapped by FingerDebugSurface.
+      return FingerDebugSurface(
+        onSingleFingerDown: (pos) => debugPrint('[RAW] single down @ $pos'),
+        onSingleFingerMove: (pos, d) =>
+            debugPrint('[RAW] single move @ $pos Δ=$d'),
+        onTwoFingerDown: (p1, p2) =>
+            debugPrint('[RAW] two-finger DOWN p1=$p1 p2=$p2'),
+        onTwoFingerMove: (p1, p2) =>
+            debugPrint('[RAW] two-finger MOVE p1=$p1 p2=$p2'),
+        child: Container(color: Colors.black12),
+      );
+    }
     return LayoutBuilder(
       builder: (_, constraints) {
         _viewSize = Size(constraints.maxWidth, constraints.maxHeight);
@@ -320,35 +247,95 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
           _didHomeFit = true;
         }
 
-        return Stack(
+        // Build the map painter segment (unless in blank test mode).
+        // Build map layer; override with blank if testing raw multi-touch.
+        Widget mapLayer = CustomPaint(
+          key: ValueKey(
+            '${_xform.rotRad.toStringAsFixed(3)}:'
+            '${_xform.scale.toStringAsFixed(3)}:'
+            '${_xform.tx.toStringAsFixed(1)}:'
+            '${_xform.ty.toStringAsFixed(1)}',
+          ),
+          painter: MapPainter(
+            projection: proj,
+            borderGroups: borderGroupsVal,
+            partitionGroups: partitionGroupsVal,
+            borderPointsByGroup: borderPtsMap,
+            partitionPointsByGroup: partitionPtsMap,
+            ref: ref,
+            gps: gps,
+            xform: _xform,
+          ),
+          child: const SizedBox.expand(),
+        );
+
+        // Finger debug surface replaces Listener; drive engine via callbacks.
+        Widget gestureSurface = FingerDebugSurface(
+          onSingleFingerDown: (pos) {
+            final now = DateTime.now();
+            _lastTapTimes.add(now);
+            if (_lastTapTimes.length > 2) _lastTapTimes.removeAt(0);
+            if (_lastTapPositions.length > 2) _lastTapPositions.removeAt(0);
+            _lastTapPositions.add(pos);
+            if (_lastTapTimes.length == 2) {
+              final dt = _lastTapTimes[1]
+                  .difference(_lastTapTimes[0])
+                  .inMilliseconds;
+              final dp = (_lastTapPositions[1] - _lastTapPositions[0]).distance;
+              if (dt < 300 && dp < 40) {
+                // double tap zoom
+                final pivotS = pos;
+                final invScale = 1.0 / _xform.scale;
+                final cosR = math.cos(-_xform.rotRad);
+                final sinR = math.sin(-_xform.rotRad);
+                final sx = pivotS.dx - _xform.tx;
+                final sy = pivotS.dy - _xform.ty;
+                final rx = sx * cosR - sy * sinR;
+                final ry = sx * sinR + sy * cosR;
+                final worldPivot = Offset(rx * invScale, ry * invScale);
+                _xform.applyZoom(
+                  math.log(1.35),
+                  pivotW: worldPivot,
+                  pivotS: pivotS,
+                );
+                debugPrint(
+                  '[J2] doubleTap zoom pivotW=(${worldPivot.dx.toStringAsFixed(1)},${worldPivot.dy.toStringAsFixed(1)}) newScale=${_xform.scale.toStringAsFixed(2)}',
+                );
+                setState(() {});
+              }
+            }
+          },
+          onSingleFingerMove: (pos, delta) {
+            // No one-finger pan (Java semantics). Could hook selection here.
+          },
+          onTwoFingerDown: (p1, p2) {
+            // Initialize engine tracking when second finger appears (simulate original engine start).
+            _pointers.clear();
+            _pointers[1] = p1; // pseudo IDs (not from PointerEvent now)
+            _pointers[2] = p2;
+            _engine.reset();
+            // fabricate pointer down sequence
+            _engine.onPointerDown(1, p1, _pointers);
+            _engine.onPointerDown(2, p2, _pointers);
+            debugPrint('[J2] twoFingerDown via FingerDebugSurface');
+          },
+          onTwoFingerMove: (p1, p2) {
+            // Update internal pointer map & compute delta using engine logic.
+            _pointers[1] = p1;
+            _pointers[2] = p2;
+            final update = _engine.onPointerMove(_pointers);
+            if (update != TwoFingerUpdate.zero) {
+              _applyTwoFinger(update);
+            }
+          },
+          child: mapLayer,
+        );
+
+        Widget content = Stack(
           children: [
-            Listener(
-              onPointerDown: _onPointerDown,
-              onPointerMove: _onPointerMove,
-              onPointerUp: _onPointerUp,
-              onPointerCancel: _onPointerCancel,
-              behavior: HitTestBehavior.opaque,
-              child: CustomPaint(
-                key: ValueKey(
-                  '${_xform.rotRad.toStringAsFixed(3)}:'
-                  '${_xform.scale.toStringAsFixed(3)}:'
-                  '${_xform.tx.toStringAsFixed(1)}:'
-                  '${_xform.ty.toStringAsFixed(1)}',
-                ),
-                painter: MapPainter(
-                  projection: proj,
-                  borderGroups: borderGroupsVal,
-                  partitionGroups: partitionGroupsVal,
-                  borderPointsByGroup: borderPtsMap,
-                  partitionPointsByGroup: partitionPtsMap,
-                  ref: ref,
-                  gps: gps,
-                  xform: _xform,
-                ),
-                child: const SizedBox.expand(),
-              ),
-            ),
+            gestureSurface,
             _buildDebugHud(),
+            // Gesture buttons always shown; remove blank test mode gating.
             Positioned(
               right: 12,
               bottom: 12,
@@ -447,6 +434,7 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
             ),
           ],
         );
+        return content; // mapLayer already embedded
       },
     );
   }
