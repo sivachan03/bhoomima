@@ -56,8 +56,39 @@ class ExportService {
     await metaFile.writeAsString(
       const JsonEncoder.withIndent('  ').convert(meta),
     );
+    // Placeholder subfolders for future expansion (groups/points/logs).
+    // These allow downstream tooling to rely on stable paths even before
+    // we serialize detailed geometry or event logs.
+    final groupsDir = Directory(
+      '${exportDir.path}${Platform.pathSeparator}groups',
+    );
+    final pointsDir = Directory(
+      '${exportDir.path}${Platform.pathSeparator}points',
+    );
+    final logsDir = Directory('${exportDir.path}${Platform.pathSeparator}logs');
+    for (final d in [groupsDir, pointsDir, logsDir]) {
+      if (!d.existsSync()) d.createSync();
+    }
+    // Minimal README placeholders (optional; ignored if already present).
+    Future<void> writePlaceholder(Directory d, String msg) async {
+      final f = File('${d.path}${Platform.pathSeparator}README.txt');
+      if (!f.existsSync()) {
+        await f.writeAsString(msg);
+      }
+    }
 
-    // TODO: Add groups/points/logs into subfolders if needed in future iterations.
+    await writePlaceholder(
+      groupsDir,
+      'Group JSON exports will appear here in future versions.',
+    );
+    await writePlaceholder(
+      pointsDir,
+      'Point/feature geometry exports will appear here in future versions.',
+    );
+    await writePlaceholder(
+      logsDir,
+      'Gesture or event logs will appear here in future versions.',
+    );
 
     // Zip the directory
     final zipPath =

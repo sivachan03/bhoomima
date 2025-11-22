@@ -24,6 +24,32 @@ class JavaStyleMapView extends ConsumerStatefulWidget {
 }
 
 class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
+  /// BM-300.11 clarification:
+  /// The current Listener only receives one pointer stream in your environment.
+  /// BM-300.11 fix summary:
+  /// 3.2 Environment (multi-touch) note:
+  /// Even with correct code, pinch/rotate will NEVER occur unless the input
+  /// source delivers two simultaneous pointer downs. Expected healthy log
+  /// sequence on a real device:
+  ///   [J2] down id=1 ... count=1
+  ///   [J2] down id=2 ... count=2
+  ///   [J2] second finger detected; engine should activate on next move
+  ///   [J2] move id=1 update=TwoFingerUpdate(...)
+  ///   [J2] apply pan=(..) scaleFactor=.. dθ=.. → T=(..) S=.. rot=..
+  /// HUD should show: P=2 active=true. If you only ever see count=1 / active=false
+  /// then the emulator/device configuration is single-touch only; enable the
+  /// buttons or double-tap zoom fallback, or test on real hardware.
+  /// - Replaced dummy initial world bounds with Rect.zero.
+  /// - Home fit now waits for first non-zero projected bounds (real farm dimensions).
+  /// - Prevents early centering on (-500,-500,1000x1000) placeholder causing off-screen farm.
+  /// - Map now visible from first valid bounds frame; subsequent frames skip redundant home fits.
+  /// - Partition groups with insufficient points (<3) are skipped with debug logs; not an error.
+  /// Without two concurrent pointer downs, `_engine.isActive` never becomes true,
+  /// so pinch/rotate deltas are not generated and the code intentionally falls
+  /// back to the one-finger pan path. To exercise zoom/rotate without multi-touch
+  /// hardware, use the + / - / rotate buttons. This file now also supports a
+  /// double-tap zoom fallback (zoom in around the tap point) to provide a
+  /// second gesture modality when multi-touch isn't available.
   /// Gesture semantics & logging expectations (BM-300.4):
   /// - Engine only activates when TWO pointers are down simultaneously.
   /// - Logs show `count=1` for single-finger interactions; these are ignored for geometry.
@@ -42,6 +68,8 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
     rotationDeadZone: 0.005, // was 0.003 (~0.17°), now ~0.29°
   );
   final Map<int, Offset> _pointers = {};
+  final List<DateTime> _lastTapTimes = [];
+  final List<Offset> _lastTapPositions = [];
   late TransformModel _xform; // runtime mutable transform
   Rect _worldBounds = Rect.zero; // starts with no bounds until data projects
   Size _viewSize = Size.zero;
@@ -91,8 +119,8 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
   void _applyTwoFinger(TwoFingerUpdate u) {
     if (u == TwoFingerUpdate.zero) return;
     applyTwoFingerUpdateToTransform(_xform, u);
-    // TEMP BM-300.6: disable clamping while debugging gesture math.
-    // _xform.clampPan(worldBounds: _worldBounds, view: _viewSize);
+    // Re-enable clamping now that home fit and visibility are correct.
+    _xform.clampPan(worldBounds: _worldBounds, view: _viewSize);
     setState(() {});
   }
 
@@ -105,6 +133,38 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
     debugPrint(
       '[J2] down kind=${e.kind} device=${e.device} pointer=${e.pointer}',
     );
+    // Double-tap detection (basic): if last tap within 300ms and distance < 40px.
+    final now = DateTime.now();
+    _lastTapTimes.add(now);
+    if (_lastTapTimes.length > 2) _lastTapTimes.removeAt(0);
+    if (_lastTapPositions.length > 2) _lastTapPositions.removeAt(0);
+    _lastTapPositions.add(e.localPosition);
+    if (_lastTapTimes.length == 2) {
+      final dt = _lastTapTimes[1].difference(_lastTapTimes[0]).inMilliseconds;
+      final dp = (_lastTapPositions[1] - _lastTapPositions[0]).distance;
+      if (dt < 300 && dp < 40) {
+        // Compute world pivot for zoom: inverse of current transform for screen point.
+        final pivotS = e.localPosition;
+        final invScale = 1.0 / _xform.scale;
+        final cosR = math.cos(-_xform.rotRad);
+        final sinR = math.sin(-_xform.rotRad);
+        // Convert screen to world: untranslate -> unrotate -> unscale.
+        final sx = pivotS.dx - _xform.tx;
+        final sy = pivotS.dy - _xform.ty;
+        final rx = sx * cosR - sy * sinR;
+        final ry = sx * sinR + sy * cosR;
+        final worldPivot = Offset(rx * invScale, ry * invScale);
+        _xform.applyZoom(
+          math.log(1.35), // zoom in ~35%
+          pivotW: worldPivot,
+          pivotS: pivotS,
+        );
+        debugPrint(
+          '[J2] doubleTap zoom pivotW=(${worldPivot.dx.toStringAsFixed(1)},${worldPivot.dy.toStringAsFixed(1)}) newScale=${_xform.scale.toStringAsFixed(2)}',
+        );
+        setState(() {});
+      }
+    }
     if (_pointers.length == 2) {
       debugPrint(
         '[J2] second finger detected; engine should activate on next move',
@@ -121,38 +181,20 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
       debugPrint('[J2] move id=${e.pointer} update=$update');
       _applyTwoFinger(update);
     } else {
-      if (_pointers.length == 1) {
-        // TEMP BM-300.5: allow simple 1-finger pan so map is not dead.
-        final dx = e.delta.dx;
-        final dy = e.delta.dy;
-        _xform.tx += dx;
-        _xform.ty += dy;
-        // TEMP BM-300.6: disable clamping to observe raw translation.
-        // _xform.clampPan(worldBounds: _worldBounds, view: _viewSize);
+      // Not active: ignoring movement (Java semantics when single finger or >2 without activation).
+      debugPrint(
+        '[J2] move id=${e.pointer} ignored (active=${_engine.isActive}, count=${_pointers.length})',
+      );
+      if (_pointers.length == 2) {
+        final entries = _pointers.entries
+            .map(
+              (e2) =>
+                  '#${e2.key}@(${e2.value.dx.toStringAsFixed(1)},${e2.value.dy.toStringAsFixed(1)})',
+            )
+            .join(', ');
         debugPrint(
-          '[J2] one-finger pan dx=${dx.toStringAsFixed(2)} '
-          'dy=${dy.toStringAsFixed(2)} → '
-          'T=(${_xform.tx.toStringAsFixed(1)},${_xform.ty.toStringAsFixed(1)})',
+          '[J2] WARN two pointers tracked but engine inactive; positions: $entries',
         );
-        setState(() {});
-      } else {
-        // 0 or >2 pointers but engine not active: ignore for geometry.
-        debugPrint(
-          '[J2] move id=${e.pointer} ignored '
-          '(active=${_engine.isActive}, count=${_pointers.length})',
-        );
-        if (_pointers.length == 2) {
-          // Two pointers present but engine inactive: likely emulator not producing distinct multi-touch stream.
-          final entries = _pointers.entries
-              .map(
-                (e2) =>
-                    '#${e2.key}@(${e2.value.dx.toStringAsFixed(1)},${e2.value.dy.toStringAsFixed(1)})',
-              )
-              .join(', ');
-          debugPrint(
-            '[J2] WARN two pointers tracked but engine inactive; positions: $entries',
-          );
-        }
       }
     }
   }

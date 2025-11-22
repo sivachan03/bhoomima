@@ -54,9 +54,9 @@ class _BM200RGestureLayerState extends State<BM200RGestureLayer> {
   void _onScaleStart(ScaleStartDetails details) {
     // Only initialize two-finger detector when exactly two pointers are down.
     if (details.pointerCount == 2) {
-      final _pair = _getTwoPointerOffsets();
-      if (_pair != null) {
-        _simGesture.start(_pair.$1, _pair.$2);
+      final pair = _getTwoPointerOffsets();
+      if (pair != null) {
+        _simGesture.start(pair.$1, pair.$2);
       }
     }
   }

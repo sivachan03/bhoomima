@@ -22,8 +22,7 @@ import 'package:photo_view/photo_view.dart';
 ///     above it using CustomPaint.
 ///   - TransformModel / SimGesture not used; PhotoView is the sole geometry engine.
 class BranchBMapView extends StatefulWidget {
-  const BranchBMapView({Key? key, required this.mapChildBuilder})
-    : super(key: key);
+  const BranchBMapView({super.key, required this.mapChildBuilder});
 
   /// Build the full map canvas (CustomPaint + markers + overlays) for the
   /// given viewport size. This is everything that should pan/zoom/rotate.
