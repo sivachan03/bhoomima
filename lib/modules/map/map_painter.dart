@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/services/gps_service.dart';
 import '../../core/services/projection_service.dart';
 import '../filter/global_filter.dart';
-import 'map_filtering.dart';
 import '../../core/models/point_group.dart';
 import '../../core/models/point.dart';
 import 'transform_model.dart';
@@ -47,6 +46,9 @@ class MapPainter extends CustomPainter {
     canvas.save();
     final filter = ref.read(globalFilterProvider);
     final m = xform;
+    debugPrint(
+      '[MP] filter groupIds=${filter.groupIds} search="${filter.search}" inViewportOnly=${filter.inViewportOnly}',
+    );
     // Apply xform as screen = T(tx,ty) * R(rot) * S(scale) * world
     canvas.translate(m.tx, m.ty);
     canvas.rotate(m.rotRad);
@@ -139,9 +141,7 @@ class MapPainter extends CustomPainter {
         }
         continue;
       }
-      if (filter.groupIds.isNotEmpty && !filter.groupIds.contains(g.id)) {
-        continue;
-      }
+      // BM-300.9: ignore groupIds filter to force draw
       final pts = partitionPointsByGroup[g.id] ?? const <Point>[];
       if (pts.length < 3) {
         // Debug: insufficient points to form partition polygon.
@@ -186,9 +186,7 @@ class MapPainter extends CustomPainter {
 
     // 2) Farm border outline last so it sits on top
     for (final g in borderGroups) {
-      if (filter.groupIds.isNotEmpty && !filter.groupIds.contains(g.id)) {
-        continue;
-      }
+      // BM-300.9: ignore groupIds filter to force draw
       final pts = borderPointsByGroup[g.id] ?? const <Point>[];
       if (pts.length < 2) {
         debugPrint(
@@ -280,33 +278,23 @@ class MapPainter extends CustomPainter {
     // Draw points (borders and partitions) as small dots; labels optional
     final pointPaint = Paint()..color = Colors.black87;
     final tp = TextPainter(textDirection: TextDirection.ltr);
-    // Approximate viewport bounds in world space (ignoring rotation)
-    final viewportWorld = Rect.fromCenter(
-      center: Offset.zero,
-      width: size.width / effectiveScale,
-      height: size.height / effectiveScale,
-    );
+    // BM-300.9: viewportWorld removed (filters bypassed for debugging)
     void drawGroupPoints(PointGroup g) {
-      if (filter.groupIds.isNotEmpty && !filter.groupIds.contains(g.id)) {
-        return;
-      }
+      // TEMP BM-300.9: ignore all filters; draw every point.
       final isBorder = borderGroups.contains(g);
       final pts =
           (isBorder
               ? borderPointsByGroup[g.id]
               : partitionPointsByGroup[g.id]) ??
           const <Point>[];
-      if (pts.isEmpty) return;
+      if (pts.isEmpty) {
+        debugPrint('MapPainter: group id=${g.id} has 0 pts in point-map');
+        return;
+      }
       var idx = 1;
       for (final p in pts) {
-        // Filter by search text and viewport if enabled
-        if (!pointMatchesSearch(p, g, filter.search)) continue;
-        if (filter.inViewportOnly &&
-            !pointInsideViewport(p, projection, viewportWorld)) {
-          continue;
-        }
         final xy = projection.project(p.lat, p.lon);
-        canvas.drawCircle(xy, 2.5 / effectiveScale, pointPaint);
+        canvas.drawCircle(xy, 3.5 / effectiveScale, pointPaint);
         if (showPointLabels) {
           final label = (p.name.isNotEmpty) ? p.name : idx.toString();
           tp.text = TextSpan(
