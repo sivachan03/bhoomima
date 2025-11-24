@@ -2,9 +2,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'app.dart';
+import 'global_pointer_debug.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Install global pointer diagnostics (raw multi-touch visibility)
+  GlobalPointerDebug.init();
 
   // Crash trap: forward FlutterError to current Zone for full stack capture
   FlutterError.onError = (FlutterErrorDetails details) {

@@ -11,6 +11,7 @@ import 'modules/properties/properties_screen.dart';
 import 'modules/map/farm_map_view.dart';
 import 'modules/map/bm_200r_demo_view.dart';
 import 'modules/map/bm_200r_map_screen.dart';
+import 'route_pointer_debug.dart';
 
 class BhoomiMaApp extends ConsumerWidget {
   // Optional boot override for tests to avoid starting background timers/IO.
@@ -66,7 +67,9 @@ class BhoomiMaApp extends ConsumerWidget {
             return const Locale('ml');
           },
           theme: ThemeData(colorSchemeSeed: Colors.green, useMaterial3: true),
-          home: const VocabBoot(child: ShellScaffold()),
+          home: const VocabBoot(
+            child: RoutePointerDebug(child: ShellScaffold()),
+          ),
         );
       },
     );
