@@ -13,6 +13,8 @@ import 'modules/map/bm_200r_demo_view.dart';
 import 'modules/map/bm_200r_map_screen.dart';
 import 'route_pointer_debug.dart';
 import 'dev/pointer_lab_page.dart';
+import 'dev/map_debug_page.dart';
+import 'pointer_hub.dart';
 
 class BhoomiMaApp extends ConsumerWidget {
   // Optional boot override for tests to avoid starting background timers/IO.
@@ -37,6 +39,7 @@ class BhoomiMaApp extends ConsumerWidget {
             home: Scaffold(body: Center(child: CircularProgressIndicator())),
           );
         }
+        final hub = ref.watch(pointerHubProvider);
         return MaterialApp(
           debugShowCheckedModeBanner: false,
           onGenerateTitle: (ctx) => AppLocalizations.of(ctx).appName,
@@ -51,6 +54,7 @@ class BhoomiMaApp extends ConsumerWidget {
             '/dev/bm200r/map': (ctx) => const BM200RMapScreen(),
             // Dev: full-screen raw pointer lab
             '/dev/pointer-lab': (ctx) => const PointerLabPage(),
+            '/dev/map-debug': (ctx) => const MapDebugPage(),
           },
           localizationsDelegates: const [
             AppLocalizations.delegate,
@@ -70,6 +74,17 @@ class BhoomiMaApp extends ConsumerWidget {
             return const Locale('ml');
           },
           theme: ThemeData(colorSchemeSeed: Colors.green, useMaterial3: true),
+          // Wrap home + routes with a translucent Listener to feed PointerHub
+          builder: (context, child) {
+            return Listener(
+              behavior: HitTestBehavior.translucent,
+              onPointerDown: hub.onEvent,
+              onPointerMove: hub.onEvent,
+              onPointerUp: hub.onEvent,
+              onPointerCancel: hub.onEvent,
+              child: child!,
+            );
+          },
           home: const VocabBoot(
             child: RoutePointerDebug(child: ShellScaffold()),
           ),

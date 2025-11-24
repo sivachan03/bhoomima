@@ -18,16 +18,64 @@ import '../finger_debug_surface.dart';
 /// 1 finger: ignored (could be wired for tap interactions overlay).
 /// 2 fingers: per-frame deltas applied to TransformModel using focal point pivot logic.
 class JavaStyleMapView extends ConsumerStatefulWidget {
-  const JavaStyleMapView({super.key, this.rawTouchTestMode = false});
+  const JavaStyleMapView({
+    super.key,
+    this.rawTouchTestMode = false,
+    this.enableSingleFingerPan = true,
+  });
 
   /// If true, renders a blank surface wrapped in FingerDebugSurface to isolate multi-touch delivery.
   final bool rawTouchTestMode;
+
+  /// Temporary fallback: allow 1-finger pan until multi-touch reliably reaches listener.
+  final bool enableSingleFingerPan;
 
   @override
   ConsumerState<JavaStyleMapView> createState() => _JavaStyleMapViewState();
 }
 
 class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
+  /// SHORT ANSWER (BM-300-15):
+  /// ✅ Two-finger touch reaches Flutter & route level.
+  /// ❌ Only one of those fingers hits this map's local Listener; the second
+  ///    finger starts on a different widget/area and is dispatched elsewhere.
+  /// 🔧 1-finger pan fallback was previously removed; with _engine.isActive=false
+  ///    all single-finger moves were ignored → "panning not working at all".
+  /// ✅ Fix strategy implemented:
+  ///    1. Re-enabled single-finger pan so map is usable while diagnosing.
+  ///    2. Added full-screen MapDebugPage to prove both fingers can reach map when unobstructed.
+  ///    3. Added global PointerHub (root Listener) for cross-app 1 vs 2 finger awareness.
+  /// Paste full hosting widget tree if pinpoint of second finger interception is needed.
+  /// HIT-TEST DIAGNOSTIC (BM-300.12): Why only one finger reaches this map surface.
+  /// Summary of observed logs:
+  ///   GLOBAL/ROUTE: finger #3 Y ≈ 517→501, finger #4 Y ≈ 550→532 (both present)
+  ///   LOCAL (map): finger #3 Y ≈ 309→283, finger #4 ABSENT
+  /// Interpretation:
+  ///   - Pointer #3's initial down was inside the map widget's bounds, so its
+  ///     subsequent events are dispatched here.
+  ///   - Pointer #4's down landed outside the map (or on a sibling overlay), so
+  ///     the hit-test assigned it to some other Listener/GestureDetector. That
+  ///     pointer's stream never enters this widget and will NEVER appear here
+  ///     unless its original down targets this RenderBox.
+  /// Flutter hit-test rules (key points):
+  ///   1. Each pointer is independently hit-tested on its DOWN event.
+  ///   2. The deepest RenderObject that returns "hit" owns that pointer's event
+  ///      stream until UP/CANCEL.
+  ///   3. Presence of multiple fingers globally does not guarantee any given
+  ///      widget will see all of them.
+  /// Consequence for gesture engines:
+  ///   - TwoFingerGestureEngine cannot activate unless BOTH pointer downs hit
+  ///     this widget. Merely observing one finger here while another exists
+  ///     elsewhere globally is insufficient.
+  /// Action items to restore 2-finger gestures:
+  ///   - Ensure the interactive map surface covers the region where users place
+  ///     both fingers (expand/position Stack children so second finger lands here).
+  ///   - Avoid overlapping absorbing widgets (e.g., bottom bars with opaque
+  ///     GestureDetectors) over intended map interaction area.
+  ///   - Optionally add a temporary full-screen translucent Listener beneath
+  ///     overlays to confirm both pointer downs hit the intended target.
+  /// This comment documents root cause so future maintainers understand why
+  /// multi-touch debug logs can show count=1 locally while count=2 globally.
   /// BM-300.11 clarification:
   /// The current Listener only receives one pointer stream in your environment.
   /// BM-300.11 fix summary:
@@ -175,9 +223,25 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
     if (widget.rawTouchTestMode) {
       // Pure raw touch diagnostic mode: blank container wrapped by FingerDebugSurface.
       return FingerDebugSurface(
+        label: 'RAW',
+        visualize: true,
         onSingleFingerDown: (pos) => debugPrint('[RAW] single down @ $pos'),
-        onSingleFingerMove: (pos, d) =>
-            debugPrint('[RAW] single move @ $pos Δ=$d'),
+        onSingleFingerMove: (pos, d) {
+          // Emulate _onPointerMove single-finger pan logging (quick win fallback)
+          if (widget.enableSingleFingerPan && _worldBounds != Rect.zero) {
+            _xform.tx += d.dx;
+            _xform.ty += d.dy;
+            _xform.clampPan(worldBounds: _worldBounds, view: _viewSize);
+            debugPrint(
+              '[J2] one-finger pan dx=${d.dx.toStringAsFixed(2)} '
+              'dy=${d.dy.toStringAsFixed(2)} → '
+              'T=(${_xform.tx.toStringAsFixed(1)},${_xform.ty.toStringAsFixed(1)})',
+            );
+            setState(() {});
+          } else {
+            debugPrint('[J2] move ignored (single pan disabled or no bounds)');
+          }
+        },
         onTwoFingerDown: (p1, p2) =>
             debugPrint('[RAW] two-finger DOWN p1=$p1 p2=$p2'),
         onTwoFingerMove: (p1, p2) =>
@@ -271,6 +335,8 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
 
         // Finger debug surface replaces Listener; drive engine via callbacks.
         Widget gestureSurface = FingerDebugSurface(
+          label: 'LOCAL',
+          visualize: true,
           onSingleFingerDown: (pos) {
             final now = DateTime.now();
             _lastTapTimes.add(now);
@@ -306,7 +372,22 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
             }
           },
           onSingleFingerMove: (pos, delta) {
-            // No one-finger pan (Java semantics). Could hook selection here.
+            // Integrate requested _onPointerMove single-finger pan logic.
+            if (widget.enableSingleFingerPan && _worldBounds != Rect.zero) {
+              _xform.tx += delta.dx;
+              _xform.ty += delta.dy;
+              _xform.clampPan(worldBounds: _worldBounds, view: _viewSize);
+              debugPrint(
+                '[J2] one-finger pan dx=${delta.dx.toStringAsFixed(2)} '
+                'dy=${delta.dy.toStringAsFixed(2)} → '
+                'T=(${_xform.tx.toStringAsFixed(1)},${_xform.ty.toStringAsFixed(1)})',
+              );
+              setState(() {});
+            } else {
+              debugPrint(
+                '[J2] move ignored (single pan disabled or no bounds)',
+              );
+            }
           },
           onTwoFingerDown: (p1, p2) {
             // Initialize engine tracking when second finger appears (simulate original engine start).
