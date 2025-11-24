@@ -15,6 +15,7 @@ import 'route_pointer_debug.dart';
 import 'dev/pointer_lab_page.dart';
 import 'dev/map_debug_page.dart';
 import 'pointer_hub.dart';
+import 'dev/two_finger_test_page.dart';
 
 class BhoomiMaApp extends ConsumerWidget {
   // Optional boot override for tests to avoid starting background timers/IO.
@@ -55,6 +56,7 @@ class BhoomiMaApp extends ConsumerWidget {
             // Dev: full-screen raw pointer lab
             '/dev/pointer-lab': (ctx) => const PointerLabPage(),
             '/dev/map-debug': (ctx) => const MapDebugPage(),
+            '/dev/two-finger-test': (ctx) => const TwoFingerTestPage(),
           },
           localizationsDelegates: const [
             AppLocalizations.delegate,

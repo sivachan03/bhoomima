@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'app.dart';
 import 'global_pointer_debug.dart';
+import 'pointer_sniffer.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -21,7 +22,7 @@ void main() {
   // Guard the app with a zone to catch uncaught synchronous/async errors
   runZonedGuarded(
     () {
-      runApp(const ProviderScope(child: BhoomiMaApp()));
+      runApp(PointerSniffer(child: const ProviderScope(child: BhoomiMaApp())));
     },
     (error, stack) {
       debugPrint('=== FATAL (zoned) ===\n$error\n$stack');
