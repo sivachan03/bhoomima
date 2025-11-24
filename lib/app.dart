@@ -12,6 +12,7 @@ import 'modules/map/farm_map_view.dart';
 import 'modules/map/bm_200r_demo_view.dart';
 import 'modules/map/bm_200r_map_screen.dart';
 import 'route_pointer_debug.dart';
+import 'dev/pointer_lab_page.dart';
 
 class BhoomiMaApp extends ConsumerWidget {
   // Optional boot override for tests to avoid starting background timers/IO.
@@ -48,6 +49,8 @@ class BhoomiMaApp extends ConsumerWidget {
             '/dev/bm200r': (ctx) => const BM200RDemoView(),
             // BM-200R: integrated with stub farm painter
             '/dev/bm200r/map': (ctx) => const BM200RMapScreen(),
+            // Dev: full-screen raw pointer lab
+            '/dev/pointer-lab': (ctx) => const PointerLabPage(),
           },
           localizationsDelegates: const [
             AppLocalizations.delegate,
