@@ -11,7 +11,9 @@ class MapViewRoot extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    debugPrint('[J2] MapViewRoot → JavaStyleMapView ACTIVE');
+    debugPrint(
+      '[J2] MapViewRoot → JavaStyleMapView ACTIVE (with mapRoot sniffer)',
+    );
     return const PointerSniffer(tag: 'mapRoot', child: JavaStyleMapView());
   }
 }

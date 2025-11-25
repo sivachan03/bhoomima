@@ -11,9 +11,8 @@ import '../../../app_state/active_property.dart';
 import '../../../core/models/point_group.dart';
 import '../../../core/models/point.dart';
 import 'two_finger_gesture.dart';
-import 'gesture_apply.dart';
 import '../finger_debug_surface.dart';
-import '../../../sniffer_surface.dart';
+// SnifferSurface removed for this run; using minimal local Listener.
 
 /// Java-style map view: direct 2-finger gesture engine (pan+zoom+rotate) without PhotoView.
 /// 1 finger: ignored (could be wired for tap interactions overlay).
@@ -121,8 +120,6 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
     rotationDeadZone: 0.005, // was 0.003 (~0.17°), now ~0.29°
   );
   final Map<int, Offset> _pointers = {};
-  final List<DateTime> _lastTapTimes = [];
-  final List<Offset> _lastTapPositions = [];
   late TransformModel _xform; // runtime mutable transform
   Rect _worldBounds = Rect.zero; // starts with no bounds until data projects
   Size _viewSize = Size.zero;
@@ -169,13 +166,7 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
     setState(() {});
   }
 
-  void _applyTwoFinger(TwoFingerUpdate u) {
-    if (u == TwoFingerUpdate.zero) return;
-    applyTwoFingerUpdateToTransform(_xform, u);
-    // Re-enable clamping now that home fit and visibility are correct.
-    _xform.clampPan(worldBounds: _worldBounds, view: _viewSize);
-    setState(() {});
-  }
+  // Two-finger apply helper temporarily unused while FingerDebugSurface is bypassed.
 
   // Original pointer down logic removed: FingerDebugSurface now supplies raw callbacks.
 
@@ -334,207 +325,139 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
           child: const SizedBox.expand(),
         );
 
-        // Finger debug surface replaces Listener; drive engine via callbacks.
-        Widget gestureSurface = FingerDebugSurface(
-          label: 'insideMap',
-          visualize: true,
-          onSingleFingerDown: (pos) {
-            // Mirror sniffer logic: start tracking first pointer locally.
-            _pointers.clear();
-            _pointers[0] = pos;
+        // Minimal local Listener: only logs pointer id and count.
+        final Map<int, Offset> localPointers = {};
+        Widget gestureSurface = Listener(
+          behavior: HitTestBehavior.opaque,
+          onPointerDown: (e) {
+            localPointers[e.pointer] = e.localPosition;
             debugPrint(
-              '[LOCAL insideMap] DOWN id=0 count=${_pointers.length} active=${_pointers.entries.map((e) => '#${e.key}@(${e.value.dx.toStringAsFixed(1)},${e.value.dy.toStringAsFixed(1)})').join(', ')}',
-            );
-            final now = DateTime.now();
-            _lastTapTimes.add(now);
-            if (_lastTapTimes.length > 2) _lastTapTimes.removeAt(0);
-            if (_lastTapPositions.length > 2) _lastTapPositions.removeAt(0);
-            _lastTapPositions.add(pos);
-            if (_lastTapTimes.length == 2) {
-              final dt = _lastTapTimes[1]
-                  .difference(_lastTapTimes[0])
-                  .inMilliseconds;
-              final dp = (_lastTapPositions[1] - _lastTapPositions[0]).distance;
-              if (dt < 300 && dp < 40) {
-                // double tap zoom
-                final pivotS = pos;
-                final invScale = 1.0 / _xform.scale;
-                final cosR = math.cos(-_xform.rotRad);
-                final sinR = math.sin(-_xform.rotRad);
-                final sx = pivotS.dx - _xform.tx;
-                final sy = pivotS.dy - _xform.ty;
-                final rx = sx * cosR - sy * sinR;
-                final ry = sx * sinR + sy * cosR;
-                final worldPivot = Offset(rx * invScale, ry * invScale);
-                _xform.applyZoom(
-                  math.log(1.35),
-                  pivotW: worldPivot,
-                  pivotS: pivotS,
-                );
-                debugPrint(
-                  '[J2] doubleTap zoom pivotW=(${worldPivot.dx.toStringAsFixed(1)},${worldPivot.dy.toStringAsFixed(1)}) newScale=${_xform.scale.toStringAsFixed(2)}',
-                );
-                setState(() {});
-              }
-            }
-          },
-          onSingleFingerMove: (pos, delta) {
-            if (_pointers.containsKey(0)) {
-              _pointers[0] = pos;
-              debugPrint(
-                '[LOCAL insideMap] MOVE id=0 count=${_pointers.length} active=${_pointers.entries.map((e) => '#${e.key}@(${e.value.dx.toStringAsFixed(1)},${e.value.dy.toStringAsFixed(1)})').join(', ')}',
-              );
-            }
-            // Integrate requested _onPointerMove single-finger pan logic.
-            if (widget.enableSingleFingerPan && _worldBounds != Rect.zero) {
-              _xform.tx += delta.dx;
-              _xform.ty += delta.dy;
-              _xform.clampPan(worldBounds: _worldBounds, view: _viewSize);
-              debugPrint(
-                '[J2] one-finger pan dx=${delta.dx.toStringAsFixed(2)} '
-                'dy=${delta.dy.toStringAsFixed(2)} → '
-                'T=(${_xform.tx.toStringAsFixed(1)},${_xform.ty.toStringAsFixed(1)})',
-              );
-              setState(() {});
-            } else {
-              debugPrint(
-                '[J2] move ignored (single pan disabled or no bounds)',
-              );
-            }
-          },
-          onTwoFingerDown: (p1, p2) {
-            // Initialize engine tracking when second finger appears (simulate original engine start).
-            _pointers.clear();
-            _pointers[1] = p1; // pseudo IDs (not from PointerEvent now)
-            _pointers[2] = p2;
-            _engine.reset();
-            // fabricate pointer down sequence
-            _engine.onPointerDown(1, p1, _pointers);
-            _engine.onPointerDown(2, p2, _pointers);
-            debugPrint(
-              '[LOCAL insideMap] DOWN2 count=${_pointers.length} active=${_pointers.entries.map((e) => '#${e.key}@(${e.value.dx.toStringAsFixed(1)},${e.value.dy.toStringAsFixed(1)})').join(', ')}',
+              '[LOCAL] DOWN id=${e.pointer} count=${localPointers.length}',
             );
           },
-          onTwoFingerMove: (p1, p2) {
-            // Update internal pointer map & compute delta using engine logic.
-            _pointers[1] = p1;
-            _pointers[2] = p2;
+          onPointerMove: (e) {
+            localPointers[e.pointer] = e.localPosition;
             debugPrint(
-              '[LOCAL insideMap] MOVE2 count=${_pointers.length} active=${_pointers.entries.map((e) => '#${e.key}@(${e.value.dx.toStringAsFixed(1)},${e.value.dy.toStringAsFixed(1)})').join(', ')}',
+              '[LOCAL] MOVE id=${e.pointer} count=${localPointers.length}',
             );
-            final update = _engine.onPointerMove(_pointers);
-            if (update != TwoFingerUpdate.zero) {
-              _applyTwoFinger(update);
-            }
+          },
+          onPointerUp: (e) {
+            localPointers.remove(e.pointer);
+            debugPrint(
+              '[LOCAL] UP id=${e.pointer} count=${localPointers.length}',
+            );
+          },
+          onPointerCancel: (e) {
+            localPointers.remove(e.pointer);
+            debugPrint(
+              '[LOCAL] CANCEL id=${e.pointer} count=${localPointers.length}',
+            );
           },
           child: mapLayer,
         );
 
-        Widget content = PointerSnifferSurface(
-          label: 'mapRoot',
-          child: Stack(
-            children: [
-              gestureSurface,
-              _buildDebugHud(),
-              // Gesture buttons always shown; remove blank test mode gating.
-              Positioned(
-                right: 12,
-                bottom: 12,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    FloatingActionButton.small(
-                      heroTag: 'java_zoom_in',
-                      onPressed: () {
-                        _xform.applyZoom(
-                          math.log(1.12),
-                          pivotW: _worldBounds.center,
-                          pivotS: Offset(
-                            _viewSize.width / 2,
-                            _viewSize.height / 2,
-                          ),
-                        );
-                        _xform.clampPan(
-                          worldBounds: _worldBounds,
-                          view: _viewSize,
-                        );
-                        setState(() {});
-                      },
-                      child: const Icon(Icons.add),
-                    ),
-                    const SizedBox(height: 8),
-                    FloatingActionButton.small(
-                      heroTag: 'java_zoom_out',
-                      onPressed: () {
-                        _xform.applyZoom(
-                          math.log(1 / 1.12),
-                          pivotW: _worldBounds.center,
-                          pivotS: Offset(
-                            _viewSize.width / 2,
-                            _viewSize.height / 2,
-                          ),
-                        );
-                        _xform.clampPan(
-                          worldBounds: _worldBounds,
-                          view: _viewSize,
-                        );
-                        setState(() {});
-                      },
-                      child: const Icon(Icons.remove),
-                    ),
-                    const SizedBox(height: 16),
-                    FloatingActionButton.small(
-                      heroTag: 'java_rot_left',
-                      onPressed: () {
-                        _xform.applyRotate(
-                          -5 * math.pi / 180.0,
-                          pivotW: _worldBounds.center,
-                          pivotS: Offset(
-                            _viewSize.width / 2,
-                            _viewSize.height / 2,
-                          ),
-                        );
-                        _xform.clampPan(
-                          worldBounds: _worldBounds,
-                          view: _viewSize,
-                        );
-                        setState(() {});
-                      },
-                      child: const Icon(Icons.rotate_left),
-                    ),
-                    const SizedBox(height: 8),
-                    FloatingActionButton.small(
-                      heroTag: 'java_rot_right',
-                      onPressed: () {
-                        _xform.applyRotate(
-                          5 * math.pi / 180.0,
-                          pivotW: _worldBounds.center,
-                          pivotS: Offset(
-                            _viewSize.width / 2,
-                            _viewSize.height / 2,
-                          ),
-                        );
-                        _xform.clampPan(
-                          worldBounds: _worldBounds,
-                          view: _viewSize,
-                        );
-                        setState(() {});
-                      },
-                      child: const Icon(Icons.rotate_right),
-                    ),
-                    const SizedBox(height: 16),
-                    FloatingActionButton.small(
-                      heroTag: 'java_home',
-                      onPressed: () {
-                        _recomputeHome();
-                      },
-                      child: const Icon(Icons.home),
-                    ),
-                  ],
-                ),
+        Widget content = Stack(
+          children: [
+            gestureSurface,
+            _buildDebugHud(),
+            // Gesture buttons always shown; remove blank test mode gating.
+            Positioned(
+              right: 12,
+              bottom: 12,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  FloatingActionButton.small(
+                    heroTag: 'java_zoom_in',
+                    onPressed: () {
+                      _xform.applyZoom(
+                        math.log(1.12),
+                        pivotW: _worldBounds.center,
+                        pivotS: Offset(
+                          _viewSize.width / 2,
+                          _viewSize.height / 2,
+                        ),
+                      );
+                      _xform.clampPan(
+                        worldBounds: _worldBounds,
+                        view: _viewSize,
+                      );
+                      setState(() {});
+                    },
+                    child: const Icon(Icons.add),
+                  ),
+                  const SizedBox(height: 8),
+                  FloatingActionButton.small(
+                    heroTag: 'java_zoom_out',
+                    onPressed: () {
+                      _xform.applyZoom(
+                        math.log(1 / 1.12),
+                        pivotW: _worldBounds.center,
+                        pivotS: Offset(
+                          _viewSize.width / 2,
+                          _viewSize.height / 2,
+                        ),
+                      );
+                      _xform.clampPan(
+                        worldBounds: _worldBounds,
+                        view: _viewSize,
+                      );
+                      setState(() {});
+                    },
+                    child: const Icon(Icons.remove),
+                  ),
+                  const SizedBox(height: 16),
+                  FloatingActionButton.small(
+                    heroTag: 'java_rot_left',
+                    onPressed: () {
+                      _xform.applyRotate(
+                        -5 * math.pi / 180.0,
+                        pivotW: _worldBounds.center,
+                        pivotS: Offset(
+                          _viewSize.width / 2,
+                          _viewSize.height / 2,
+                        ),
+                      );
+                      _xform.clampPan(
+                        worldBounds: _worldBounds,
+                        view: _viewSize,
+                      );
+                      setState(() {});
+                    },
+                    child: const Icon(Icons.rotate_left),
+                  ),
+                  const SizedBox(height: 8),
+                  FloatingActionButton.small(
+                    heroTag: 'java_rot_right',
+                    onPressed: () {
+                      _xform.applyRotate(
+                        5 * math.pi / 180.0,
+                        pivotW: _worldBounds.center,
+                        pivotS: Offset(
+                          _viewSize.width / 2,
+                          _viewSize.height / 2,
+                        ),
+                      );
+                      _xform.clampPan(
+                        worldBounds: _worldBounds,
+                        view: _viewSize,
+                      );
+                      setState(() {});
+                    },
+                    child: const Icon(Icons.rotate_right),
+                  ),
+                  const SizedBox(height: 16),
+                  FloatingActionButton.small(
+                    heroTag: 'java_home',
+                    onPressed: () {
+                      _recomputeHome();
+                    },
+                    child: const Icon(Icons.home),
+                  ),
+                ],
               ),
-            ],
-          ),
+            ),
+          ],
         );
         return content; // mapLayer already embedded
       },
