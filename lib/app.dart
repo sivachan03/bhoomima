@@ -12,9 +12,9 @@ import 'modules/map/farm_map_view.dart';
 import 'modules/map/bm_200r_demo_view.dart';
 import 'modules/map/bm_200r_map_screen.dart';
 import 'route_pointer_debug.dart';
-import 'pointer_sniffer.dart';
 import 'dev/pointer_lab_page.dart';
 import 'dev/map_debug_page.dart';
+import 'dev/isolated_map_debug_page.dart';
 import 'pointer_hub.dart';
 import 'dev/two_finger_test_page.dart';
 
@@ -57,6 +57,7 @@ class BhoomiMaApp extends ConsumerWidget {
             // Dev: full-screen raw pointer lab
             '/dev/pointer-lab': (ctx) => const PointerLabPage(),
             '/dev/map-debug': (ctx) => const MapDebugPage(),
+            '/dev/map-isolated': (ctx) => const IsolatedMapDebugPage(),
             '/dev/two-finger-test': (ctx) => const TwoFingerTestPage(),
           },
           localizationsDelegates: const [
@@ -88,14 +89,8 @@ class BhoomiMaApp extends ConsumerWidget {
               child: child!,
             );
           },
-          home: VocabBoot(
-            child: PointerSniffer(
-              tag: 'home',
-              child: PointerSniffer(
-                tag: 'shell',
-                child: const RoutePointerDebug(child: ShellScaffold()),
-              ),
-            ),
+          home: const VocabBoot(
+            child: RoutePointerDebug(child: ShellScaffold()),
           ),
         );
       },
