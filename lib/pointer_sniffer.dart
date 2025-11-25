@@ -7,8 +7,9 @@ import 'package:flutter/material.dart';
 ///   If it never exceeds 1, problem is below any map/layout concerns (device/emulator/input source).
 /// Attach at app root to verify multi-touch reaches Flutter irrespective of local widget hit-tests.
 class PointerSniffer extends StatefulWidget {
+  final String tag;
   final Widget child;
-  const PointerSniffer({super.key, required this.child});
+  const PointerSniffer({super.key, required this.tag, required this.child});
 
   @override
   State<PointerSniffer> createState() => _PointerSnifferState();
@@ -18,34 +19,34 @@ class _PointerSnifferState extends State<PointerSniffer> {
   final Map<int, Offset> _pointers = {};
 
   void _onDown(PointerDownEvent e) {
-    _pointers[e.pointer] = e.position;
+    _pointers[e.pointer] = e.localPosition;
     _log('DOWN', e.pointer);
   }
 
   void _onMove(PointerMoveEvent e) {
-    _pointers[e.pointer] = e.position;
+    _pointers[e.pointer] = e.localPosition;
     _log('MOVE', e.pointer);
   }
 
   void _onUp(PointerUpEvent e) {
-    _log('UP', e.pointer);
     _pointers.remove(e.pointer);
+    _log('UP', e.pointer);
   }
 
   void _onCancel(PointerCancelEvent e) {
-    _log('CANCEL', e.pointer);
     _pointers.remove(e.pointer);
+    _log('CANCEL', e.pointer);
   }
 
-  void _log(String tag, int id) {
-    final entries = _pointers.entries
+  void _log(String phase, int id) {
+    final active = _pointers.entries
         .map(
           (e) =>
               '#${e.key}@(${e.value.dx.toStringAsFixed(1)},${e.value.dy.toStringAsFixed(1)})',
         )
         .join(', ');
     debugPrint(
-      '[SNIFFER][$tag] id=$id count=${_pointers.length} active=[$entries]',
+      '[SNIF ${widget.tag}] $phase id=$id count=${_pointers.length} active=[$active]',
     );
   }
 

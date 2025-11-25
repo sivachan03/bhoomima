@@ -16,6 +16,8 @@ import 'dev/pointer_lab_page.dart';
 import 'dev/map_debug_page.dart';
 import 'pointer_hub.dart';
 import 'dev/two_finger_test_page.dart';
+import 'sniffer_surface.dart';
+import 'pointer_sniffer.dart';
 
 class BhoomiMaApp extends ConsumerWidget {
   // Optional boot override for tests to avoid starting background timers/IO.
@@ -87,8 +89,16 @@ class BhoomiMaApp extends ConsumerWidget {
               child: child!,
             );
           },
-          home: const VocabBoot(
-            child: RoutePointerDebug(child: ShellScaffold()),
+          home: VocabBoot(
+            child: RoutePointerDebug(
+              child: PointerSniffer(
+                tag: 'home',
+                child: PointerSnifferSurface(
+                  label: 'page',
+                  child: PointerSniffer(tag: 'body', child: ShellScaffold()),
+                ),
+              ),
+            ),
           ),
         );
       },

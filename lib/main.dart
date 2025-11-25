@@ -22,7 +22,12 @@ void main() {
   // Guard the app with a zone to catch uncaught synchronous/async errors
   runZonedGuarded(
     () {
-      runApp(PointerSniffer(child: const ProviderScope(child: BhoomiMaApp())));
+      runApp(
+        PointerSniffer(
+          tag: 'root',
+          child: const ProviderScope(child: BhoomiMaApp()),
+        ),
+      );
     },
     (error, stack) {
       debugPrint('=== FATAL (zoned) ===\n$error\n$stack');
