@@ -22,6 +22,7 @@ class JavaStyleMapView extends ConsumerStatefulWidget {
     super.key,
     this.rawTouchTestMode = false,
     this.enableSingleFingerPan = true,
+    this.hideOverlays = false,
   });
 
   /// If true, renders a blank surface wrapped in FingerDebugSurface to isolate multi-touch delivery.
@@ -29,6 +30,9 @@ class JavaStyleMapView extends ConsumerStatefulWidget {
 
   /// Temporary fallback: allow 1-finger pan until multi-touch reliably reaches listener.
   final bool enableSingleFingerPan;
+
+  /// When true, suppress debug HUD & gesture buttons for pure full-screen hit-test.
+  final bool hideOverlays;
 
   @override
   ConsumerState<JavaStyleMapView> createState() => _JavaStyleMapViewState();
@@ -356,11 +360,13 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
           child: mapLayer,
         );
 
-        Widget content = Stack(
+        if (widget.hideOverlays) {
+          return gestureSurface; // pure full-screen map surface
+        }
+        return Stack(
           children: [
             gestureSurface,
             _buildDebugHud(),
-            // Gesture buttons always shown; remove blank test mode gating.
             Positioned(
               right: 12,
               bottom: 12,
@@ -459,7 +465,6 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
             ),
           ],
         );
-        return content; // mapLayer already embedded
       },
     );
   }

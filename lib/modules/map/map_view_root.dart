@@ -14,6 +14,9 @@ class MapViewRoot extends ConsumerWidget {
     debugPrint(
       '[J2] MapViewRoot → JavaStyleMapView ACTIVE (with mapRoot sniffer)',
     );
-    return const PointerSniffer(tag: 'mapRoot', child: JavaStyleMapView());
+    return const PassivePointerSniffer(
+      tag: 'mapRoot',
+      child: JavaStyleMapView(),
+    );
   }
 }

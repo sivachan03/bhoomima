@@ -15,7 +15,10 @@ class IsolatedMapDebugPage extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return const Scaffold(
-      body: PointerSniffer(tag: 'mapRoot', child: JavaStyleMapView()),
+      body: PointerSniffer(
+        tag: 'mapRoot',
+        child: JavaStyleMapView(hideOverlays: true),
+      ),
     );
   }
 }
