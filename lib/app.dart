@@ -11,10 +11,10 @@ import 'modules/properties/properties_screen.dart';
 import 'modules/map/farm_map_view.dart';
 import 'modules/map/bm_200r_demo_view.dart';
 import 'modules/map/bm_200r_map_screen.dart';
-import 'route_pointer_debug.dart';
 import 'dev/pointer_lab_page.dart';
 import 'dev/map_debug_page.dart';
 import 'dev/isolated_map_debug_page.dart';
+import 'dev/fullscreen_map_page.dart';
 import 'pointer_hub.dart';
 import 'dev/two_finger_test_page.dart';
 
@@ -41,7 +41,10 @@ class BhoomiMaApp extends ConsumerWidget {
             home: Scaffold(body: Center(child: CircularProgressIndicator())),
           );
         }
-        final hub = ref.watch(pointerHubProvider);
+        // BM-300 flicker fix: do NOT watch pointerHubProvider here; watching causes
+        // MaterialApp + entire home subtree to rebuild on every pointer move.
+        // We only need the instance for the Listener callbacks, so use read.
+        final hub = ref.read(pointerHubProvider);
         return MaterialApp(
           debugShowCheckedModeBanner: false,
           onGenerateTitle: (ctx) => AppLocalizations.of(ctx).appName,
@@ -58,6 +61,7 @@ class BhoomiMaApp extends ConsumerWidget {
             '/dev/pointer-lab': (ctx) => const PointerLabPage(),
             '/dev/map-debug': (ctx) => const MapDebugPage(),
             '/dev/map-isolated': (ctx) => const IsolatedMapDebugPage(),
+            '/dev/map-fullscreen': (ctx) => const FullscreenMapPage(),
             '/dev/two-finger-test': (ctx) => const TwoFingerTestPage(),
           },
           localizationsDelegates: const [
@@ -89,9 +93,7 @@ class BhoomiMaApp extends ConsumerWidget {
               child: child!,
             );
           },
-          home: const VocabBoot(
-            child: RoutePointerDebug(child: ShellScaffold()),
-          ),
+          home: const VocabBoot(child: ShellScaffold()),
         );
       },
     );

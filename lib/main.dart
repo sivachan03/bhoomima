@@ -23,7 +23,7 @@ void main() {
   runZonedGuarded(
     () {
       runApp(
-        PointerSniffer(
+        PassivePointerSniffer(
           tag: 'root',
           child: const ProviderScope(child: BhoomiMaApp()),
         ),

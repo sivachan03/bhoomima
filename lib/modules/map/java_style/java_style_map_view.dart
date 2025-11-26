@@ -39,6 +39,10 @@ class JavaStyleMapView extends ConsumerStatefulWidget {
 }
 
 class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
+  // Debug: instance identity to detect teardown/recreation during gestures
+  static int _sidCounter = 0;
+  final int _sid = _sidCounter++;
+
   /// SHORT ANSWER (BM-300-15):
   /// ✅ Two-finger touch reaches Flutter & route level.
   /// ❌ Only one of those fingers hits this map's local Listener; the second
@@ -140,6 +144,13 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
   void initState() {
     super.initState();
     _xform = TransformModel(suppressLogs: false);
+    debugPrint('[J2] state#$_sid init');
+  }
+
+  @override
+  void dispose() {
+    debugPrint('[J2] state#$_sid dispose');
+    super.dispose();
   }
 
   void _recomputeHome() {
@@ -167,7 +178,7 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
     debugPrint(
       '[J2] homeFit manual scale=${scale.toStringAsFixed(4)} centerW=(${worldCenter.dx.toStringAsFixed(1)},${worldCenter.dy.toStringAsFixed(1)}) T=(${_xform.tx.toStringAsFixed(1)},${_xform.ty.toStringAsFixed(1)})',
     );
-    setState(() {});
+    // NO setState here; build will reflect new _xform after home fit.
   }
 
   // Two-finger apply helper temporarily unused while FingerDebugSurface is bypassed.
@@ -303,8 +314,9 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
           debugPrint(
             '[J2] home → bounds ready; performing initial fit (w=${_worldBounds.width.toStringAsFixed(1)} h=${_worldBounds.height.toStringAsFixed(1)})',
           );
-          _recomputeHome();
+          _recomputeHome(); // Only updates _xform, no setState
           _didHomeFit = true;
+          debugPrint('[J2] state#$_sid didHomeFit=true');
         }
 
         // Build the map painter segment (unless in blank test mode).
@@ -363,6 +375,8 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
         if (widget.hideOverlays) {
           return gestureSurface; // pure full-screen map surface
         }
+        // Build trace (helps detect rebuilds vs repaints)
+        debugPrint('[J2] build state#$_sid didHomeFit=$_didHomeFit');
         return Stack(
           children: [
             gestureSurface,
@@ -456,7 +470,9 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
                   FloatingActionButton.small(
                     heroTag: 'java_home',
                     onPressed: () {
-                      _recomputeHome();
+                      setState(() {
+                        _recomputeHome();
+                      });
                     },
                     child: const Icon(Icons.home),
                   ),
