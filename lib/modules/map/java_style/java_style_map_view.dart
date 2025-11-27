@@ -12,11 +12,9 @@ import '../../../core/models/point_group.dart';
 import '../../../core/models/point.dart';
 import 'two_finger_gesture.dart';
 import '../finger_debug_surface.dart';
+
 // SnifferSurface removed for this run; using minimal local Listener.
 
-/// Java-style map view: direct 2-finger gesture engine (pan+zoom+rotate) without PhotoView.
-/// 1 finger: ignored (could be wired for tap interactions overlay).
-/// 2 fingers: per-frame deltas applied to TransformModel using focal point pivot logic.
 class JavaStyleMapView extends ConsumerStatefulWidget {
   const JavaStyleMapView({
     super.key,
@@ -39,6 +37,7 @@ class JavaStyleMapView extends ConsumerStatefulWidget {
 }
 
 class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
+  Offset? _lastPanPos;
   // Debug: instance identity to detect teardown/recreation during gestures
   static int _sidCounter = 0;
   final int _sid = _sidCounter++;
@@ -341,33 +340,52 @@ class _JavaStyleMapViewState extends ConsumerState<JavaStyleMapView> {
           child: const SizedBox.expand(),
         );
 
-        // Minimal local Listener: only logs pointer id and count.
-        final Map<int, Offset> localPointers = {};
+        // Minimal local Listener: logs pointer id and count, and enables 1-finger pan using _pointers and _xform.
         Widget gestureSurface = Listener(
           behavior: HitTestBehavior.opaque,
           onPointerDown: (e) {
-            localPointers[e.pointer] = e.localPosition;
+            _pointers[e.pointer] = e.localPosition;
+            _lastPanPos = e.localPosition; // prime for first pan delta
             debugPrint(
-              '[LOCAL] DOWN id=${e.pointer} count=${localPointers.length}',
+              '[LOCAL] DOWN id=${e.pointer} count=${_pointers.length}',
             );
           },
           onPointerMove: (e) {
-            localPointers[e.pointer] = e.localPosition;
+            _pointers[e.pointer] = e.localPosition;
             debugPrint(
-              '[LOCAL] MOVE id=${e.pointer} count=${localPointers.length}',
+              '[LOCAL] MOVE id=${e.pointer} count=${_pointers.length}',
             );
+            // Enable 1-finger pan: if only one pointer is active, treat as pan
+            if (_pointers.length == 1 && _worldBounds != Rect.zero) {
+              final pointerId = _pointers.keys.first;
+              final last = _pointers[pointerId]!;
+              if (_lastPanPos != null) {
+                final d = last - _lastPanPos!;
+                _xform.tx += d.dx;
+                _xform.ty += d.dy;
+                // BM-300.27: Temporarily bypass clamp during 1-finger pan to confirm movement.
+                // _xform.clampPan(worldBounds: _worldBounds, view: _viewSize);
+                debugPrint(
+                  '[J2] one-finger pan dx=${d.dx.toStringAsFixed(2)} dy=${d.dy.toStringAsFixed(2)} → T=(${_xform.tx.toStringAsFixed(1)},${_xform.ty.toStringAsFixed(1)})',
+                );
+                setState(() {});
+              }
+              _lastPanPos = last;
+            } else {
+              _lastPanPos = null;
+            }
           },
           onPointerUp: (e) {
-            localPointers.remove(e.pointer);
-            debugPrint(
-              '[LOCAL] UP id=${e.pointer} count=${localPointers.length}',
-            );
+            _pointers.remove(e.pointer);
+            debugPrint('[LOCAL] UP id=${e.pointer} count=${_pointers.length}');
+            _lastPanPos = null;
           },
           onPointerCancel: (e) {
-            localPointers.remove(e.pointer);
+            _pointers.remove(e.pointer);
             debugPrint(
-              '[LOCAL] CANCEL id=${e.pointer} count=${localPointers.length}',
+              '[LOCAL] CANCEL id=${e.pointer} count=${_pointers.length}',
             );
+            _lastPanPos = null;
           },
           child: mapLayer,
         );

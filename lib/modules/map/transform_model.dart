@@ -144,13 +144,27 @@ class TransformModel {
     }
     final contentW = maxX - minX;
     final contentH = maxY - minY;
-    // If content narrower than view, center; else clamp edges.
+    // Relaxed clamp (BM-300.26):
+    // If content fully fits inside view both horizontally and vertically, allow free panning
+    // within a soft margin instead of force-centering every frame (which freezes motion).
+    // Otherwise retain edge clamping logic.
     double txAdjust = tx;
     double tyAdjust = ty;
-    if (contentW <= view.width) {
+    const double softMarginFrac = 0.06; // allow small wander before recentre
+    final double softMarginX = view.width * softMarginFrac;
+    final double softMarginY = view.height * softMarginFrac;
+
+    final bool fitsX = contentW <= view.width;
+    final bool fitsY = contentH <= view.height;
+
+    if (fitsX) {
+      // Permit tx shift as long as content stays within soft margin box; only pull back if exceeded.
       final centerX = (minX + maxX) * 0.5;
       final viewCenterX = view.width * 0.5;
-      txAdjust += (viewCenterX - centerX);
+      final dxToCenter = viewCenterX - centerX;
+      if (dxToCenter.abs() > softMarginX) {
+        txAdjust += dxToCenter.sign * (dxToCenter.abs() - softMarginX);
+      }
     } else {
       final leftVisibleMin = view.width - contentW; // min allowed minX
       final targetMinX = minX;
@@ -160,10 +174,13 @@ class TransformModel {
         txAdjust -= (targetMinX - leftVisibleMin); // shift right
       }
     }
-    if (contentH <= view.height) {
+    if (fitsY) {
       final centerY = (minY + maxY) * 0.5;
       final viewCenterY = view.height * 0.5;
-      tyAdjust += (viewCenterY - centerY);
+      final dyToCenter = viewCenterY - centerY;
+      if (dyToCenter.abs() > softMarginY) {
+        tyAdjust += dyToCenter.sign * (dyToCenter.abs() - softMarginY);
+      }
     } else {
       final topVisibleMin = view.height - contentH;
       final targetMinY = minY;
@@ -175,6 +192,11 @@ class TransformModel {
     }
     tx = txAdjust;
     ty = tyAdjust;
+    if (!suppressLogs) {
+      debugPrint(
+        '[XFORM] clampPan fitsX=$fitsX fitsY=$fitsY content=(${contentW.toStringAsFixed(1)}x${contentH.toStringAsFixed(1)}) view=(${view.width.toStringAsFixed(1)}x${view.height.toStringAsFixed(1)}) T=(${tx.toStringAsFixed(1)},${ty.toStringAsFixed(1)})',
+      );
+    }
   }
 
   void applyZoom(
