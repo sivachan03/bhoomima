@@ -31,3 +31,4 @@ Is not (yet):
 - Guaranteed identical feel to the Android version if your MapPainter uses a different transform order.
 
 Code location: `lib/modules/map/java_style/` (engine, applier, and view).
+# bhoomima
